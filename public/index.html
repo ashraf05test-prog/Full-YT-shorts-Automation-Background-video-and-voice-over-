@@ -200,6 +200,13 @@ textarea.input{resize:none;min-height:80px}
         <div class="chip" onclick="setQuality(this,'480p')">480p</div>
       </div>
     </div>
+    <div style="margin-bottom:10px">
+      <div class="sec-title">সোর্স</div>
+      <div class="chips" id="sourceChips">
+        <div class="chip on" onclick="setSource(this,'auto')">🔥 Auto (TikTok/YT)</div>
+        <div class="chip" onclick="setSource(this,'kuaishou')">🇨🇳 Kuaishou/快手</div>
+      </div>
+    </div>
     <div style="display:flex;gap:8px">
       <button class="btn btn-red btn-full" onclick="startBulkDownload()">⬇️ বাল্ক ডাউনলোড</button>
       <button class="btn btn-ghost" onclick="clearUrls()">🗑 ক্লিয়ার</button>
@@ -621,6 +628,12 @@ function setQuality(el, q) {
   el.classList.add('on');
 }
 
+function setSource(el, src) {
+  S.source = src;
+  document.querySelectorAll('#sourceChips .chip').forEach(c => c.classList.remove('on'));
+  el.classList.add('on');
+}
+
 function clearUrls() { document.getElementById('urlInput').value = ''; }
 
 async function startBulkDownload() {
@@ -647,16 +660,29 @@ async function startBulkDownload() {
     dlLog('⬇️ ' + item.url.substring(0, 50) + '...');
 
     try {
-      // Step 1: Start job
-      const r = await fetch(backend + '/api/download', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: item.url, quality: S.quality, mute: gs().autoMute !== false })
-      });
-      if (!r.ok) throw new Error(await r.text());
-      const { jobId } = await r.json();
+      let jobId;
 
-      // Step 2: Poll
+      if (S.source === 'kuaishou') {
+        // Kuaishou API
+        const r = await fetch(backend + '/api/kuaishou/download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: item.url, mute: gs().autoMute !== false })
+        });
+        if (!r.ok) throw new Error(await r.text());
+        jobId = (await r.json()).jobId;
+      } else {
+        // TikTok/YouTube via yt-dlp
+        const r = await fetch(backend + '/api/download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: item.url, quality: S.quality, mute: gs().autoMute !== false })
+        });
+        if (!r.ok) throw new Error(await r.text());
+        jobId = (await r.json()).jobId;
+      }
+
+      // Poll job
       const data = await pollJob(jobId);
       item.status = 'done';
 
