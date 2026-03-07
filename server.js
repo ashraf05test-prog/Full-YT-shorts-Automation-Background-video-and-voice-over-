@@ -729,3 +729,163 @@ app.post('/api/drive/auto-upload', async (req, res) => {
     }
   })();
 });
+
+// ========== KUAISHOU DOWNLOADER ==========
+app.post('/api/kuaishou/download', async (req, res) => {
+  const { url, mute = true } = req.body;
+  if (!url) return res.status(400).json({ error: 'URL required' });
+
+  const jobId = createJob();
+  res.json({ jobId, status: 'processing' });
+
+  (async () => {
+    try {
+      const fetch = (await import('node-fetch')).default;
+
+      // Extract video ID from URL
+      // Supports: https://www.kuaishou.com/short-video/VIDEOID
+      // or: https://v.kuaishou.com/SHORTCODE
+      let photoId = null;
+
+      const shortVideoMatch = url.match(/short-video\/([a-zA-Z0-9_-]+)/);
+      if (shortVideoMatch) photoId = shortVideoMatch[1];
+
+      // If short URL, resolve redirect first
+      if (!photoId) {
+        try {
+          const redir = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0' } });
+          const finalUrl = redir.url;
+          const m = finalUrl.match(/short-video\/([a-zA-Z0-9_-]+)/);
+          if (m) photoId = m[1];
+        } catch {}
+      }
+
+      if (!photoId) throw new Error('Video ID বের করা গেলো না। URL টা ঠিক আছে?');
+
+      // Call Kuaishou GraphQL
+      const gqlRes = await fetch('https://www.kuaishou.com/graphql', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+          'Referer': 'https://www.kuaishou.com/',
+          'Origin': 'https://www.kuaishou.com'
+        },
+        body: JSON.stringify({
+          operationName: 'visionVideoDetail',
+          variables: { photoId, page: 'selected' },
+          query: `query visionVideoDetail($photoId: String, $type: String, $page: String) {
+            visionVideoDetail(photoId: $photoId, type: $type, page: $page) {
+              photo { id caption coverUrl photoUrl }
+            }
+          }`
+        })
+      });
+
+      const gqlData = await gqlRes.json();
+      const photo = gqlData?.data?.visionVideoDetail?.photo;
+      if (!photo?.photoUrl) throw new Error('Video URL পাওয়া গেলো না। Video private হতে পারে।');
+
+      const videoUrl = photo.photoUrl;
+      const title = photo.caption || 'Kuaishou_' + photoId;
+      const thumbnail = photo.coverUrl || null;
+
+      // Download video
+      const outPath = path.join(TEMP_DIR, `ks_${jobId}.mp4`);
+      const vidRes = await fetch(videoUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.kuaishou.com/' }
+      });
+      if (!vidRes.ok) throw new Error('Video download failed: ' + vidRes.status);
+      const buffer = await vidRes.buffer();
+      fs.writeFileSync(outPath, buffer);
+
+      // Mute if needed
+      let finalPath = outPath;
+      if (mute) {
+        const mutedPath = path.join(TEMP_DIR, `ks_muted_${jobId}.mp4`);
+        await execAsync(`ffmpeg -i "${outPath}" -an -c:v copy -y "${mutedPath}"`, { timeout: 60000 });
+        fs.unlinkSync(outPath);
+        finalPath = mutedPath;
+      }
+
+      const stat = fs.statSync(finalPath);
+      const filename = path.basename(finalPath);
+
+      jobs[jobId] = {
+        status: 'done',
+        result: {
+          title: title.substring(0, 100),
+          filename,
+          filepath: finalPath,
+          thumbnail,
+          size: (stat.size / 1024 / 1024).toFixed(1) + 'MB',
+          source: 'kuaishou'
+        }
+      };
+
+    } catch (err) {
+      console.error('[KS]', err.message);
+      jobs[jobId] = { status: 'error', error: err.message };
+    }
+  })();
+});
+
+// Bulk Kuaishou download
+app.post('/api/kuaishou/bulk', async (req, res) => {
+  const { urls, mute = true } = req.body;
+  if (!urls?.length) return res.status(400).json({ error: 'URLs required' });
+
+  const jobId = createJob();
+  res.json({ jobId, status: 'processing' });
+
+  (async () => {
+    const results = [];
+    for (const url of urls) {
+      try {
+        const fetch = (await import('node-fetch')).default;
+        let photoId = null;
+        const m = url.match(/short-video\/([a-zA-Z0-9_-]+)/);
+        if (m) photoId = m[1];
+        if (!photoId) {
+          const redir = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0' } });
+          const fm = redir.url.match(/short-video\/([a-zA-Z0-9_-]+)/);
+          if (fm) photoId = fm[1];
+        }
+        if (!photoId) throw new Error('ID বের হলো না');
+
+        const gqlRes = await fetch('https://www.kuaishou.com/graphql', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.kuaishou.com/' },
+          body: JSON.stringify({
+            operationName: 'visionVideoDetail',
+            variables: { photoId, page: 'selected' },
+            query: `query visionVideoDetail($photoId: String, $type: String, $page: String) { visionVideoDetail(photoId: $photoId, type: $type, page: $page) { photo { id caption coverUrl photoUrl } } }`
+          })
+        });
+        const gqlData = await gqlRes.json();
+        const photo = gqlData?.data?.visionVideoDetail?.photo;
+        if (!photo?.photoUrl) throw new Error('Video URL নেই');
+
+        const outPath = path.join(TEMP_DIR, `ks_bulk_${Date.now()}.mp4`);
+        const vidRes = await fetch(photo.photoUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        const buf = await vidRes.buffer();
+        fs.writeFileSync(outPath, buf);
+
+        let finalPath = outPath;
+        if (mute) {
+          const mp = path.join(TEMP_DIR, `ks_m_${Date.now()}.mp4`);
+          await execAsync(`ffmpeg -i "${outPath}" -an -c:v copy -y "${mp}"`, { timeout: 60000 });
+          fs.unlinkSync(outPath);
+          finalPath = mp;
+        }
+
+        const stat = fs.statSync(finalPath);
+        results.push({ url, title: photo.caption || photoId, filename: path.basename(finalPath), filepath: finalPath, thumbnail: photo.coverUrl, size: (stat.size/1024/1024).toFixed(1)+'MB', status: 'ok' });
+      } catch (e) {
+        results.push({ url, error: e.message, status: 'error' });
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    jobs[jobId] = { status: 'done', result: { results } };
+  })();
+});
