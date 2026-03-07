@@ -730,7 +730,7 @@ app.post('/api/drive/auto-upload', async (req, res) => {
   })();
 });
 
-// ========== KUAISHOU DOWNLOADER ==========
+// ========== KUAISHOU DOWNLOADER (via yt-dlp) ==========
 app.post('/api/kuaishou/download', async (req, res) => {
   const { url, mute = true } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
@@ -740,135 +740,53 @@ app.post('/api/kuaishou/download', async (req, res) => {
 
   (async () => {
     try {
-      const fetch = (await import('node-fetch')).default;
+      const outTemplate = path.join(TEMP_DIR, `ks_${jobId}.%(ext)s`);
+      const cmd = `yt-dlp -f "best[ext=mp4]/best" --merge-output-format mp4 --no-playlist --retries 3 --socket-timeout 30 --no-warnings -o "${outTemplate}" "${url}"`;
 
-      // Extract photo ID from various Kuaishou URL formats
-      let photoId = null;
+      console.log('[KS] Downloading:', url);
+      await execAsync(cmd, { timeout: 120000 });
 
-      function extractKsId(u) {
-        // https://www.kuaishou.com/short-video/VIDEOID
-        let m = u.match(/short-video\/([a-zA-Z0-9_-]+)/);
-        if (m) return m[1];
-        // https://www.kuaishou.com/f/VIDEOID
-        m = u.match(/kuaishou\.com\/f\/([a-zA-Z0-9_-]+)/);
-        if (m) return m[1];
-        // photoId param
-        m = u.match(/photoId=([a-zA-Z0-9_-]+)/);
-        if (m) return m[1];
-        // /photo/VIDEOID
-        m = u.match(/\/photo\/([a-zA-Z0-9_-]+)/);
-        if (m) return m[1];
-        return null;
-      }
+      const files = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(`ks_${jobId}`));
+      if (!files.length) throw new Error('ডাউনলোড হয়নি');
 
-      photoId = extractKsId(url);
+      let videoPath = path.join(TEMP_DIR, files[0]);
 
-      // If short URL (v.kuaishou.com), resolve redirect
-      if (!photoId) {
-        try {
-          const redir = await fetch(url, {
-            redirect: 'follow',
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-            }
-          });
-          const finalUrl = redir.url;
-          console.log('[KS] Resolved URL:', finalUrl);
-          photoId = extractKsId(finalUrl);
+      // Get title
+      let title = 'Kuaishou_video';
+      try {
+        const { stdout } = await execAsync(`yt-dlp --get-title --no-warnings "${url}"`, { timeout: 30000 });
+        title = stdout.trim() || title;
+      } catch {}
 
-          // Try reading HTML for photoId if still not found
-          if (!photoId) {
-            const html = await redir.text();
-            const hm = html.match(/"photoId"\s*:\s*"([a-zA-Z0-9_-]+)"/);
-            if (hm) photoId = hm[1];
-            const hm2 = html.match(/photoId=([a-zA-Z0-9_-]+)/);
-            if (!photoId && hm2) photoId = hm2[1];
-          }
-        } catch (e) { console.warn('[KS] Redirect failed:', e.message); }
-      }
-
-      if (!photoId) throw new Error('Video ID বের করা গেলো না। URL টা ঠিক আছে?');
-
-      // Try multiple GraphQL endpoints
-      const gqlEndpoints = [
-        'https://www.kuaishou.com/graphql',
-        'https://v.m.chenzhongtech.com/graphql',
-        'https://www.kwai.com/graphql'
-      ];
-
-      let photo = null;
-      for (const endpoint of gqlEndpoints) {
-        try {
-          const gqlRes = await fetch(endpoint, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
-              'Referer': endpoint.replace('/graphql', '/'),
-              'Origin': endpoint.replace('/graphql', '')
-            },
-            body: JSON.stringify({
-              operationName: 'visionVideoDetail',
-              variables: { photoId, page: 'selected' },
-              query: `query visionVideoDetail($photoId: String, $type: String, $page: String) {
-                visionVideoDetail(photoId: $photoId, type: $type, page: $page) {
-                  photo { id caption coverUrl photoUrl }
-                }
-              }`
-            })
-          });
-          const gqlData = await gqlRes.json();
-          console.log('[KS] GraphQL response from', endpoint, ':', JSON.stringify(gqlData).substring(0, 200));
-          photo = gqlData?.data?.visionVideoDetail?.photo;
-          if (photo?.photoUrl) break;
-        } catch (e) { console.warn('[KS] Endpoint failed:', endpoint, e.message); }
-      }
-      if (!photo?.photoUrl) throw new Error('Video URL পাওয়া গেলো না। Video private হতে পারে।');
-
-      const videoUrl = photo.photoUrl;
-      const title = photo.caption || 'Kuaishou_' + photoId;
-      const thumbnail = photo.coverUrl || null;
-
-      // Download video
-      const outPath = path.join(TEMP_DIR, `ks_${jobId}.mp4`);
-      const vidRes = await fetch(videoUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.kuaishou.com/' }
-      });
-      if (!vidRes.ok) throw new Error('Video download failed: ' + vidRes.status);
-      const buffer = await vidRes.buffer();
-      fs.writeFileSync(outPath, buffer);
-
-      // Mute if needed
-      let finalPath = outPath;
+      // Mute
       if (mute) {
         const mutedPath = path.join(TEMP_DIR, `ks_muted_${jobId}.mp4`);
-        await execAsync(`ffmpeg -i "${outPath}" -an -c:v copy -y "${mutedPath}"`, { timeout: 60000 });
-        fs.unlinkSync(outPath);
-        finalPath = mutedPath;
+        await execAsync(`ffmpeg -i "${videoPath}" -an -c:v copy -y "${mutedPath}"`, { timeout: 60000 });
+        fs.unlinkSync(videoPath);
+        videoPath = mutedPath;
       }
 
-      const stat = fs.statSync(finalPath);
-      const filename = path.basename(finalPath);
-
+      const stat = fs.statSync(videoPath);
       jobs[jobId] = {
         status: 'done',
         result: {
           title: title.substring(0, 100),
-          filename,
-          filepath: finalPath,
-          thumbnail,
+          filename: path.basename(videoPath),
+          filepath: videoPath,
+          thumbnail: null,
           size: (stat.size / 1024 / 1024).toFixed(1) + 'MB',
           source: 'kuaishou'
         }
       };
-
+      console.log('[KS] Done:', title);
     } catch (err) {
       console.error('[KS]', err.message);
       jobs[jobId] = { status: 'error', error: err.message };
     }
   })();
 });
+
+
 
 // Bulk Kuaishou download
 app.post('/api/kuaishou/bulk', async (req, res) => {
