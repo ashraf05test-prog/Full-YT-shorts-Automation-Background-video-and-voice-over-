@@ -187,7 +187,7 @@ app.post('/api/ai-generate', async (req, res) => {
     } else if (service === 'grok') {
       const r = await fetch('https://api.x.ai/v1/chat/completions', {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey || process.env.GROK_API_KEY}` },
-        body: JSON.stringify({ model: 'grok-beta', messages: [{ role: 'user', content: prompt }], temperature: 0.9, max_tokens: 1500 })
+        body: JSON.stringify({ model: 'grok-3-mini', messages: [{ role: 'user', content: prompt }], temperature: 0.9, max_tokens: 1500 })
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error?.message);
@@ -592,7 +592,7 @@ app.post('/api/drive/auto-upload', async (req, res) => {
         } else if (aiService === 'grok') {
           const ar = await fetch('https://api.x.ai/v1/chat/completions', {
             method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiKey}` },
-            body: JSON.stringify({ model: 'grok-beta', messages: [{ role: 'user', content: prompt }], max_tokens: 800 })
+            body: JSON.stringify({ model: 'grok-3-mini', messages: [{ role: 'user', content: prompt }], max_tokens: 800 })
           });
           const ad = await ar.json();
           aiText = ad.choices?.[0]?.message?.content || '';
