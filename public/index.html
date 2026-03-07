@@ -568,8 +568,15 @@ function loadSettings() {
   if (s.autoAI) document.getElementById('autoAIToggle').classList.add('on');
   if (s.deleteAfter) document.getElementById('deleteAfterToggle').classList.add('on');
   // Load AI key for current service
+  const lastSvc = s.lastAIService || 'gemini';
+  S.aiService = lastSvc;
   const keyMap = { gemini: s.geminiKey, grok: s.grokKey, openai: s.openaiKey };
-  if (keyMap[S.aiService]) document.getElementById('aiApiKey').value = keyMap[S.aiService] || '';
+  if (keyMap[lastSvc]) document.getElementById('aiApiKey').value = keyMap[lastSvc] || '';
+  // Set active chip
+  document.querySelectorAll('#aiChips .chip').forEach(c => {
+    const svc = c.getAttribute('onclick')?.match(/'(\w+)'/)?.[1];
+    if (svc === lastSvc) c.classList.add('on'); else c.classList.remove('on');
+  });
 }
 
 // ========== TABS ==========
@@ -985,6 +992,7 @@ function closeModal(id) { document.getElementById(id).classList.remove('open'); 
 // ========== AI ==========
 function setAI(el, service) {
   S.aiService = service;
+  ss({ lastAIService: service });
   document.querySelectorAll('#aiChips .chip').forEach(c => c.classList.remove('on'));
   el.classList.add('on');
   const s = gs();
