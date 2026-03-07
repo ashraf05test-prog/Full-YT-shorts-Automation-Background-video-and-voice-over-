@@ -923,6 +923,76 @@ input[type="range"]::-webkit-slider-thumb {
   text-align: right;
 }
 
+
+/* ===== FULLSCREEN VIDEO PREVIEW ===== */
+.video-preview-overlay {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  z-index: 1000;
+  display: none;
+  flex-direction: column;
+}
+.video-preview-overlay.open { display: flex; }
+.preview-top-bar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  padding: 50px 16px 16px;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.85), transparent);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.preview-close-btn {
+  width: 40px; height: 40px;
+  background: rgba(255,255,255,0.15);
+  border: none; border-radius: 50%;
+  color: white; font-size: 18px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; flex-shrink: 0;
+  backdrop-filter: blur(8px);
+}
+.preview-top-title {
+  font-size: 13px; color: white;
+  font-weight: 600; flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.preview-video-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.preview-video-container video {
+  width: 100%; height: 100%;
+  object-fit: contain;
+}
+.preview-bottom-bar {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  padding: 16px 16px 30px;
+  background: linear-gradient(to top, rgba(0,0,0,0.9), transparent);
+  z-index: 5;
+}
+.preview-bottom-title {
+  font-size: 14px; font-weight: 700;
+  color: white; margin-bottom: 6px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.preview-bottom-meta {
+  font-size: 11px; color: rgba(255,255,255,0.6);
+  margin-bottom: 12px;
+  display: flex; gap: 10px;
+}
+.preview-btns {
+  display: flex; gap: 8px;
+}
+
 </style>
 </head>
 <body>
@@ -1762,6 +1832,7 @@ async function processDownloadQueue() {
     }
     
     updateStats();
+  checkConnections();
   }
   
   toast(`✅ ${done}টি ডাউনলোড সম্পন্ন`, 'success');
@@ -1817,10 +1888,11 @@ function renderVideos() {
         </div>
       </div>
       <div class="video-actions" onclick="event.stopPropagation()">
-        <button class="btn btn-sm btn-purple" onclick="openAudioModal('${v.id}')">🎵</button>
-        <button class="btn btn-sm btn-secondary" onclick="generateMetaForVideo('${v.id}')">✨</button>
-        <button class="btn btn-sm btn-primary" onclick="uploadSingleVideo('${v.id}')">📤</button>
-        <button class="btn btn-sm btn-danger" onclick="deleteVideo('${v.id}')">🗑</button>
+        <button class="btn btn-sm btn-secondary btn-icon" onclick="previewVideo('${v.id}')" title="প্লে">▶</button>
+        <button class="btn btn-sm btn-purple btn-icon" onclick="openAudioModal('${v.id}')" title="অডিও">🎵</button>
+        <button class="btn btn-sm btn-secondary btn-icon" onclick="generateMetaForVideo('${v.id}')" title="AI মেটা">✨</button>
+        <button class="btn btn-sm btn-primary btn-icon" onclick="uploadSingleVideo('${v.id}')" title="আপলোড">📤</button>
+        <button class="btn btn-sm btn-danger btn-icon" onclick="deleteVideo('${v.id}')" title="ডিলিট">🗑</button>
       </div>
     </div>
   `).join('');
@@ -2078,6 +2150,19 @@ function setAI(el, service) {
   state.aiService = service;
   document.querySelectorAll('#panel-ai .chips-row .chip').forEach(c=>c.className='chip inactive-chip');
   el.className = 'chip active-chip';
+  
+  const settings = getSettings();
+  const keyInput = document.getElementById('aiApiKey');
+  if (service === 'gemini') {
+    keyInput.placeholder = 'AIza... (Gemini API Key)';
+    keyInput.value = settings.geminiKey || '';
+  } else if (service === 'grok') {
+    keyInput.placeholder = 'xai-... (Grok API Key)';
+    keyInput.value = settings.grokKey || '';
+  } else if (service === 'openai') {
+    keyInput.placeholder = 'sk-... (OpenAI API Key)';
+    keyInput.value = settings.openaiKey || '';
+  }
 }
 
 function saveApiKey() {
@@ -2085,8 +2170,11 @@ function saveApiKey() {
   if (!key) { toast('API Key দিন!', 'error'); return; }
   const s = getSettings();
   s[state.aiService + 'Key'] = key;
+  // Also save to named fields in settings panel
+  if (state.aiService === 'gemini') { const el = document.getElementById('geminiKey'); if(el) el.value = key; }
+  if (state.aiService === 'grok') { const el = document.getElementById('grokKey'); if(el) el.value = key; }
   saveSettings(s);
-  toast('💾 সেভ হয়েছে', 'success');
+  toast('💾 ' + state.aiService + ' Key সেভ হয়েছে', 'success');
 }
 
 async function generateMeta() {
@@ -2223,22 +2311,69 @@ function copyText(t) {
 }
 
 // ==================== UPLOAD ====================
-function connectYouTube() {
-  const clientId = document.getElementById('ytClientId')?.value || getSettings().ytClientId || '';
-  if (!clientId) { toast('Settings-এ YouTube Client ID দিন!', 'error'); switchTab('settings', document.querySelectorAll('.bottom-nav-item')[6]); return; }
+async function connectYouTube() {
+  const backend = getBackendUrl();
+  const settings = getSettings();
+  const clientId = document.getElementById('ytClientId')?.value || settings.ytClientId || '';
+  if (!clientId) { toast('Settings-এ YouTube Client ID দিন!', 'error'); return; }
   
-  const scope = 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube';
-  const redirectUri = getBackendUrl() + '/auth/youtube/callback';
-  const authUrl = `https://accounts.google.com/o/oauth2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&response_type=code&access_type=offline`;
+  const scope = encodeURIComponent('https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube');
+  const redirectUri = encodeURIComponent(backend + '/auth/youtube/callback');
+  const authUrl = `https://accounts.google.com/o/oauth2/auth?client_id=${clientId}&redirect_uri=${redirectUri}&scope=${scope}&response_type=code&access_type=offline&prompt=consent`;
   
-  window.open(authUrl, '_blank');
+  const popup = window.open(authUrl, 'ytauth', 'width=500,height=600');
   toast('YouTube কানেক্ট পেজ খুলছে...', 'info');
+  
+  // Poll for connection
+  const timer = setInterval(async () => {
+    try {
+      const res = await fetch(backend + '/api/status');
+      const data = await res.json();
+      if (data.youtube) {
+        clearInterval(timer);
+        document.getElementById('ytStatus').textContent = '✅ ' + (data.ytChannel || 'সংযুক্ত');
+        document.getElementById('ytStatus').className = 'connect-status active';
+        document.getElementById('ytBtn').textContent = 'সংযুক্ত ✓';
+        document.getElementById('ytBtn').className = 'btn btn-sm btn-green connect-btn';
+        document.getElementById('ytCard').classList.add('connected');
+        toast('✅ YouTube সংযুক্ত হয়েছে!', 'success');
+        if (popup) popup.close();
+      }
+    } catch {}
+  }, 2000);
+  setTimeout(() => clearInterval(timer), 120000);
 }
 
-function connectDrive() {
-  const clientId = document.getElementById('driveClientId')?.value || getSettings().driveClientId || '';
-  if (!clientId) { toast('Settings-এ Drive Client ID দিন!', 'error'); return; }
-  toast('Google Drive কানেক্ট হচ্ছে...', 'info');
+async function connectDrive() {
+  const backend = getBackendUrl();
+  const settings = getSettings();
+  const clientId = document.getElementById('driveClientId')?.value || document.getElementById('ytClientId')?.value || settings.driveClientId || settings.ytClientId || '';
+  if (!clientId) { toast('Settings-এ Client ID দিন!', 'error'); return; }
+  
+  const scope = encodeURIComponent('https://www.googleapis.com/auth/drive.file');
+  const redirectUri = encodeURIComponent(backend + '/auth/drive/callback');
+  const authUrl = `https://accounts.google.com/o/oauth2/auth?client_id=${clientId}&redirect_uri=${redirectUri}&scope=${scope}&response_type=code&access_type=offline&prompt=consent`;
+  
+  const popup = window.open(authUrl, 'driveauth', 'width=500,height=600');
+  toast('Google Drive কানেক্ট পেজ খুলছে...', 'info');
+  
+  const timer = setInterval(async () => {
+    try {
+      const res = await fetch(backend + '/api/status');
+      const data = await res.json();
+      if (data.drive) {
+        clearInterval(timer);
+        document.getElementById('driveStatus').textContent = '✅ সংযুক্ত';
+        document.getElementById('driveStatus').className = 'connect-status active';
+        document.getElementById('driveBtn').textContent = 'সংযুক্ত ✓';
+        document.getElementById('driveBtn').className = 'btn btn-sm btn-green connect-btn';
+        document.getElementById('driveCard').classList.add('connected');
+        toast('✅ Google Drive সংযুক্ত হয়েছে!', 'success');
+        if (popup) popup.close();
+      }
+    } catch {}
+  }, 2000);
+  setTimeout(() => clearInterval(timer), 120000);
 }
 
 async function uploadSingleVideo(videoId) {
@@ -2567,6 +2702,71 @@ document.getElementById('scheduleSource').addEventListener('change', function() 
   document.getElementById('driveFolderRow').style.display = this.value === 'drive' ? '' : 'none';
 });
 
+
+// ==================== FULLSCREEN VIDEO PREVIEW ====================
+let currentPreviewId = null;
+
+function previewVideo(videoId) {
+  const v = state.videos.find(v => v.id === videoId);
+  if (!v) return;
+  currentPreviewId = videoId;
+
+  const backend = getBackendUrl();
+  const streamUrl = backend + '/api/stream?file=' + encodeURIComponent(v.filename || '');
+
+  const videoEl = document.getElementById('previewVideoEl');
+  videoEl.src = streamUrl;
+  videoEl.load();
+  videoEl.play().catch(() => {});
+
+  const title = v.meta?.title || v.title || 'ভিডিও';
+  document.getElementById('previewTopTitle').textContent = title;
+  document.getElementById('previewBottomTitle').textContent = title;
+
+  let meta = (v.size || '?') + ' · ' + (v.duration || '?');
+  if (v.muted) meta += ' · 🔇 MUTED';
+  if (v.audioId) {
+    const a = state.audios.find(a => a.id === v.audioId);
+    if (a) meta += ' · 🎵 ' + a.name.substring(0, 12);
+  }
+  document.getElementById('previewBottomMeta').textContent = meta;
+
+  document.getElementById('pvAudioBtn').onclick = () => { closeVideoPreview(); openAudioModal(videoId); };
+  document.getElementById('pvAiBtn').onclick = () => { closeVideoPreview(); generateMetaForVideo(videoId); };
+  document.getElementById('pvUploadBtn').onclick = () => { closeVideoPreview(); uploadSingleVideo(videoId); };
+
+  document.getElementById('videoPreviewOverlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeVideoPreview() {
+  const videoEl = document.getElementById('previewVideoEl');
+  videoEl.pause();
+  videoEl.src = '';
+  document.getElementById('videoPreviewOverlay').classList.remove('open');
+  document.body.style.overflow = '';
+  currentPreviewId = null;
+}
+
+function togglePreviewPlay() {
+  const videoEl = document.getElementById('previewVideoEl');
+  const btn = document.getElementById('pvPlayPause');
+  if (videoEl.paused) {
+    videoEl.play();
+    btn.textContent = '⏸ পজ';
+  } else {
+    videoEl.pause();
+    btn.textContent = '▶ প্লে';
+  }
+}
+
+// Close on back button (Android)
+window.addEventListener('popstate', () => {
+  if (document.getElementById('videoPreviewOverlay').classList.contains('open')) {
+    closeVideoPreview();
+  }
+});
+
 // ==================== INIT ====================
 function init() {
   loadSettingsUI();
@@ -2616,5 +2816,29 @@ function init() {
 
 init();
 </script>
+
+<!-- FULLSCREEN VIDEO PREVIEW OVERLAY -->
+<div class="video-preview-overlay" id="videoPreviewOverlay">
+  <div class="preview-top-bar">
+    <button class="preview-close-btn" onclick="closeVideoPreview()">✕</button>
+    <div class="preview-top-title" id="previewTopTitle"></div>
+  </div>
+  <div class="preview-video-container">
+    <video id="previewVideoEl" controls playsinline autoplay
+      style="width:100%;height:100%;object-fit:contain">
+    </video>
+  </div>
+  <div class="preview-bottom-bar">
+    <div class="preview-bottom-title" id="previewBottomTitle"></div>
+    <div class="preview-bottom-meta" id="previewBottomMeta"></div>
+    <div class="preview-btns">
+      <button class="btn btn-sm btn-green" id="pvPlayPause" onclick="togglePreviewPlay()">⏸ পজ</button>
+      <button class="btn btn-sm btn-purple" id="pvAudioBtn">🎵 অডিও</button>
+      <button class="btn btn-sm btn-secondary" id="pvAiBtn">✨ AI মেটা</button>
+      <button class="btn btn-sm btn-primary" id="pvUploadBtn">📤 আপলোড</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
