@@ -1226,6 +1226,7 @@ function setSchedSource(el, src) {
 }
 
 
+function saveSched() {
   const cfg = {
     enabled: document.getElementById('schedMasterToggle').classList.contains('on'),
     slots: SCHED.slots,
@@ -1239,7 +1240,6 @@ function setSchedSource(el, src) {
     aiKey: document.getElementById('schedAIToggle').classList.contains('on') ? (gs().geminiKey || gs().grokKey || gs().openaiKey || null) : null
   };
   ss({ schedSlots: SCHED.slots, schedDays: SCHED.days, schedFolderId: cfg.folderId, schedMaxVids: cfg.maxVideos, schedPrivacy: cfg.privacy, schedDeleteAfter: cfg.deleteAfterUpload, schedAI: cfg.aiService !== null, schedEnabled: cfg.enabled });
-  // Sync to server — browser বন্ধ থাকলেও কাজ করবে
   fetch(getBackend() + '/api/schedule/save', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfg)
