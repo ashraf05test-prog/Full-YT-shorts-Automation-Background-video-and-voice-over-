@@ -742,22 +742,50 @@ app.post('/api/kuaishou/download', async (req, res) => {
     try {
       const fetch = (await import('node-fetch')).default;
 
-      // Extract video ID from URL
-      // Supports: https://www.kuaishou.com/short-video/VIDEOID
-      // or: https://v.kuaishou.com/SHORTCODE
+      // Extract photo ID from various Kuaishou URL formats
       let photoId = null;
 
-      const shortVideoMatch = url.match(/short-video\/([a-zA-Z0-9_-]+)/);
-      if (shortVideoMatch) photoId = shortVideoMatch[1];
+      function extractKsId(u) {
+        // https://www.kuaishou.com/short-video/VIDEOID
+        let m = u.match(/short-video\/([a-zA-Z0-9_-]+)/);
+        if (m) return m[1];
+        // https://www.kuaishou.com/f/VIDEOID
+        m = u.match(/kuaishou\.com\/f\/([a-zA-Z0-9_-]+)/);
+        if (m) return m[1];
+        // photoId param
+        m = u.match(/photoId=([a-zA-Z0-9_-]+)/);
+        if (m) return m[1];
+        // /photo/VIDEOID
+        m = u.match(/\/photo\/([a-zA-Z0-9_-]+)/);
+        if (m) return m[1];
+        return null;
+      }
 
-      // If short URL, resolve redirect first
+      photoId = extractKsId(url);
+
+      // If short URL (v.kuaishou.com), resolve redirect
       if (!photoId) {
         try {
-          const redir = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0' } });
+          const redir = await fetch(url, {
+            redirect: 'follow',
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            }
+          });
           const finalUrl = redir.url;
-          const m = finalUrl.match(/short-video\/([a-zA-Z0-9_-]+)/);
-          if (m) photoId = m[1];
-        } catch {}
+          console.log('[KS] Resolved URL:', finalUrl);
+          photoId = extractKsId(finalUrl);
+
+          // Try reading HTML for photoId if still not found
+          if (!photoId) {
+            const html = await redir.text();
+            const hm = html.match(/"photoId"\s*:\s*"([a-zA-Z0-9_-]+)"/);
+            if (hm) photoId = hm[1];
+            const hm2 = html.match(/photoId=([a-zA-Z0-9_-]+)/);
+            if (!photoId && hm2) photoId = hm2[1];
+          }
+        } catch (e) { console.warn('[KS] Redirect failed:', e.message); }
       }
 
       if (!photoId) throw new Error('Video ID বের করা গেলো না। URL টা ঠিক আছে?');
