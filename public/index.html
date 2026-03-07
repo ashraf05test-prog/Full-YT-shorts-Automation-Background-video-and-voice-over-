@@ -277,7 +277,7 @@ textarea.input{resize:none;min-height:80px}
   </div>
   <div class="card">
     <div class="card-title">📝 প্রম্পট</div>
-    <textarea class="input" id="aiPrompt" rows="4" placeholder="বাংলায় YouTube Shorts এর জন্য টাইটেল ও ট্যাগ তৈরি করো..."></textarea>
+    <textarea class="input" id="aiPrompt" rows="4" placeholder="ইসলামিক YouTube Shorts এর জন্য বাংলা টাইটেল, হ্যাশট্যাগ ও ট্যাগ তৈরি করো..."></textarea>
     <button class="btn btn-purple btn-full" style="margin-top:8px" onclick="generateAI()">✨ জেনারেট করো</button>
   </div>
   <div id="aiResultBox" style="display:none">
@@ -474,11 +474,15 @@ textarea.input{resize:none;min-height:80px}
   <div class="card">
     <div class="card-title">🤖 AI Keys</div>
     <div style="margin-bottom:8px">
+      <label class="upload-form-label">🆓 Groq API Key (Free — console.groq.com)</label>
+      <input class="input" id="groqKey" placeholder="gsk_...">
+    </div>
+    <div style="margin-bottom:8px">
       <label class="upload-form-label">Gemini API Key</label>
       <input class="input" id="geminiKey" placeholder="AIza...">
     </div>
     <div style="margin-bottom:8px">
-      <label class="upload-form-label">Grok API Key</label>
+      <label class="upload-form-label">Grok API Key (xAI)</label>
       <input class="input" id="grokKey" placeholder="xai-...">
     </div>
     <div style="margin-bottom:8px">
@@ -586,6 +590,7 @@ function loadSettings() {
   if (s.ytClientId) document.getElementById('ytClientId').value = s.ytClientId;
   if (s.ytClientSecret) document.getElementById('ytClientSecret').value = s.ytClientSecret;
   if (s.geminiKey) document.getElementById('geminiKey').value = s.geminiKey;
+  if (s.groqKey) document.getElementById('groqKey').value = s.groqKey;
   if (s.grokKey) document.getElementById('grokKey').value = s.grokKey;
   if (s.openaiKey) document.getElementById('openaiKey').value = s.openaiKey;
   if (s.autoMute === false) document.getElementById('autoMuteToggle').classList.remove('on');
@@ -594,7 +599,7 @@ function loadSettings() {
   // Load AI key for current service
   const lastSvc = s.lastAIService || 'gemini';
   S.aiService = lastSvc;
-  const keyMap = { gemini: s.geminiKey, grok: s.grokKey, openai: s.openaiKey };
+  const keyMap = { gemini: s.geminiKey, groq: s.groqKey, grok: s.grokKey, openai: s.openaiKey };
   if (keyMap[lastSvc]) document.getElementById('aiApiKey').value = keyMap[lastSvc] || '';
   // Set active chip
   document.querySelectorAll('#aiChips .chip').forEach(c => {
@@ -1020,7 +1025,7 @@ function setAI(el, service) {
   document.querySelectorAll('#aiChips .chip').forEach(c => c.classList.remove('on'));
   el.classList.add('on');
   const s = gs();
-  const map = { gemini: s.geminiKey, grok: s.grokKey, openai: s.openaiKey };
+  const map = { gemini: s.geminiKey, groq: s.groqKey, grok: s.grokKey, openai: s.openaiKey };
   document.getElementById('aiApiKey').value = map[service] || '';
   document.getElementById('aiApiKey').placeholder = service === 'gemini' ? 'AIza...' : service === 'groq' ? 'gsk_...' : service === 'grok' ? 'xai-...' : 'sk-...';
 }
@@ -1030,7 +1035,7 @@ function saveApiKey() {
   if (!key) { toast('Key দিন!'); return; }
   ss({ [S.aiService + 'Key']: key });
   // Also update named field
-  const fieldMap = { gemini: 'geminiKey', grok: 'grokKey', openai: 'openaiKey' };
+  const fieldMap = { gemini: 'geminiKey', groq: 'groqKey', grok: 'grokKey', openai: 'openaiKey' };
   const field = document.getElementById(fieldMap[S.aiService]);
   if (field) field.value = key;
   toast('💾 সেভ হয়েছে');
@@ -1385,7 +1390,7 @@ async function runAutoUpload() {
 
   const s = gs();
   const aiService = s.geminiKey ? 'gemini' : s.grokKey ? 'grok' : s.openaiKey ? 'openai' : null;
-  const aiKey = s.geminiKey || s.grokKey || s.openaiKey || null;
+  const aiKey = s.groqKey || s.geminiKey || s.grokKey || s.openaiKey || null;
 
   if (!folderId && schedSource === 'folder') { schedLog('✗ ভিডিও Folder ID নেই!', true); SCHED.running = false; return; }
 
@@ -1463,7 +1468,7 @@ function saveOAuth() {
 }
 
 function saveAIKeys() {
-  ss({ geminiKey: document.getElementById('geminiKey').value.trim(), grokKey: document.getElementById('grokKey').value.trim(), openaiKey: document.getElementById('openaiKey').value.trim() });
+  ss({ geminiKey: document.getElementById('geminiKey').value.trim(), groqKey: document.getElementById('groqKey').value.trim(), grokKey: document.getElementById('grokKey').value.trim(), openaiKey: document.getElementById('openaiKey').value.trim() });
   toast('💾 AI Keys সেভ হয়েছে');
 }
 
