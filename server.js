@@ -123,106 +123,115 @@ app.get('/api/files', (req, res) => {
 
 // ====== DOWNLOAD VIDEO ======
 app.post('/api/download', async (req, res) => {
-  const { url, quality = 'best', mute = true, removeTikTokWatermark = true } = req.body;
-  
+  const { url, quality = 'best', mute = true } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
+
+  const id = Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+  const outputTemplate = path.join(TEMP_DIR, `${id}.%(ext)s`);
+
+  const isTikTok = url.includes('tiktok.com') || url.includes('vt.tiktok.com');
+
+  // Format selection
+  let fmt = 'best[ext=mp4]/best';
+  if (isTikTok) fmt = 'download_addr-2/download_addr/play_addr/best[ext=mp4]/best';
+  else if (quality === '1080p') fmt = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best';
+  else if (quality === '720p') fmt = 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/best';
+  else if (quality === '480p') fmt = 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]/best';
+  else fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best';
+
+  const tikArgs = isTikTok ? '--impersonate "chrome-110" --add-header "Referer:https://www.tiktok.com/"' : '';
+
+  const cmd = [
+    'yt-dlp',
+    `-f "${fmt}"`,
+    tikArgs,
+    '--merge-output-format mp4',
+    '--write-thumbnail',
+    '--convert-thumbnails jpg',
+    '--no-playlist',
+    '--no-warnings',
+    '--retries 3',
+    '--fragment-retries 3',
+    '--retry-sleep 2',
+    '--socket-timeout 30',
+    `-o "${outputTemplate}"`,
+    `"${url}"`
+  ].filter(Boolean).join(' ');
+
+  console.log('[DL]', url);
+
+  // Use spawn with timeout instead of execAsync
+  const { exec } = require('child_process');
   
-  try {
-    const id = Date.now() + '_' + Math.random().toString(36).substr(2, 8);
-    const outputTemplate = path.join(TEMP_DIR, `${id}.%(ext)s`);
-    
-    // Build yt-dlp command with multiple format fallbacks
-    let formatArgs = '';
-    if (quality === 'best') formatArgs = '-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"';
-    else if (quality === '1080p') formatArgs = '-f "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best"';
-    else if (quality === '720p') formatArgs = '-f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/best"';
-    else if (quality === '480p') formatArgs = '-f "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]/best"';
-    else formatArgs = '-f "best[ext=mp4]/best"';
-    
-    const isTikTok = url.includes('tiktok.com') || url.includes('vt.tiktok.com');
-
-    // TikTok watermark-free + impersonation
-    const finalFormat = isTikTok
-      ? '-f "download_addr-2/download_addr/play_addr/best[ext=mp4]/best"'
-      : formatArgs;
-
-    const extraArgs = isTikTok
-      ? '--impersonate "chrome-110" --add-header "Referer:https://www.tiktok.com/"'
-      : '';
-
-    const cmd = `yt-dlp ${finalFormat} ${extraArgs} \
-      --merge-output-format mp4 \
-      --write-thumbnail \
-      --convert-thumbnails jpg \
-      --no-playlist \
-      --retries 5 \
-      --fragment-retries 5 \
-      --retry-sleep 3 \
-      -o "${outputTemplate}" \
-      "${url}"`;
-    
-    console.log('Downloading:', url);
-    const { stdout, stderr } = await execAsync(cmd, { timeout: 300000 });
-    
-    // Find downloaded file
-    const files = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(id) && f.endsWith('.mp4'));
-    if (!files.length) throw new Error('Download failed - no output file');
-    
-    const videoFile = files[0];
-    const videoPath = path.join(TEMP_DIR, videoFile);
-    
-    // Get title from yt-dlp info
-    let title = videoFile.replace('.mp4', '').substring(id.length + 1) || 'Video';
-    
-    // Try to get info
-    try {
-      const infoCmd = `yt-dlp --skip-download --print title "${url}" 2>/dev/null`;
-      const { stdout: titleOut } = await execAsync(infoCmd, { timeout: 30000 });
-      title = titleOut.trim() || title;
-    } catch {}
-    
-    // Get duration and size
-    let duration = '?';
-    try {
-      const { stdout: dur } = await execAsync(`ffprobe -v quiet -print_format json -show_format "${videoPath}"`);
-      const info = JSON.parse(dur);
-      const secs = parseFloat(info.format?.duration || 0);
-      duration = `${Math.floor(secs/60)}:${String(Math.floor(secs%60)).padStart(2,'0')}`;
-    } catch {}
-    
-    const stats = fs.statSync(videoPath);
-    const size = (stats.size / 1024 / 1024).toFixed(1) + 'MB';
-    
-    // Find thumbnail
-    const thumbFiles = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(id) && (f.endsWith('.jpg') || f.endsWith('.webp')));
-    const thumbnail = thumbFiles.length ? `/temp/${thumbFiles[0]}` : null;
-    
-    // Mute video if requested
-    let finalPath = videoPath;
-    if (mute) {
-      const mutedPath = path.join(TEMP_DIR, `${id}_muted.mp4`);
-      try {
-        await execAsync(`ffmpeg -i "${videoPath}" -an -c:v copy "${mutedPath}" -y`);
-        fs.unlinkSync(videoPath);
-        finalPath = mutedPath;
-      } catch { finalPath = videoPath; }
-    }
-    
-    res.json({
-      success: true,
-      filename: path.basename(finalPath),
-      filepath: finalPath,
-      title,
-      duration,
-      size,
-      thumbnail,
-      muted: mute
+  const downloadPromise = new Promise((resolve, reject) => {
+    const proc = exec(cmd, { timeout: 120000 }, (err, stdout, stderr) => {
+      if (err && !stdout && !stderr) {
+        reject(new Error('Download timeout or failed'));
+        return;
+      }
+      resolve({ stdout, stderr });
     });
     
+    // Force kill after 90 seconds
+    setTimeout(() => {
+      try { proc.kill('SIGKILL'); } catch {}
+      reject(new Error('Download timeout (90s)'));
+    }, 90000);
+  });
+
+  try {
+    await downloadPromise;
   } catch (err) {
-    console.error('Download error:', err.message);
-    res.status(500).json({ error: err.message });
+    // Check if file was partially downloaded anyway
+    const partials = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(id) && f.endsWith('.mp4'));
+    if (!partials.length) {
+      return res.status(500).json({ error: err.message });
+    }
   }
+
+  // Find output file
+  const files = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(id) && f.endsWith('.mp4'));
+  if (!files.length) return res.status(500).json({ error: 'No output file found' });
+
+  const videoFile = files[0];
+  let videoPath = path.join(TEMP_DIR, videoFile);
+
+  // Get title
+  let title = 'Video';
+  try {
+    const { stdout } = await execAsync(`yt-dlp --skip-download --print title --no-warnings "${url}"`, { timeout: 15000 });
+    title = stdout.trim() || title;
+  } catch {}
+
+  // Get duration
+  let duration = '?';
+  try {
+    const { stdout } = await execAsync(`ffprobe -v quiet -print_format json -show_format "${videoPath}"`);
+    const secs = parseFloat(JSON.parse(stdout).format?.duration || 0);
+    duration = `${Math.floor(secs/60)}:${String(Math.floor(secs%60)).padStart(2,'0')}`;
+  } catch {}
+
+  const size = (fs.statSync(videoPath).size / 1024 / 1024).toFixed(1) + 'MB';
+  const thumbFiles = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(id) && (f.endsWith('.jpg') || f.endsWith('.webp')));
+  const thumbnail = thumbFiles.length ? `/temp/${thumbFiles[0]}` : null;
+
+  // Mute
+  let finalPath = videoPath;
+  if (mute) {
+    const mutedPath = path.join(TEMP_DIR, `${id}_muted.mp4`);
+    try {
+      await execAsync(`ffmpeg -i "${videoPath}" -an -c:v copy "${mutedPath}" -y`, { timeout: 60000 });
+      try { fs.unlinkSync(videoPath); } catch {}
+      finalPath = mutedPath;
+    } catch { finalPath = videoPath; }
+  }
+
+  res.json({
+    success: true,
+    filename: path.basename(finalPath),
+    filepath: finalPath,
+    title, duration, size, thumbnail, muted: mute
+  });
 });
 
 // ====== EXTRACT AUDIO ======
@@ -269,11 +278,12 @@ app.post('/api/extract-audio', async (req, res) => {
     
     const stats = fs.statSync(path.join(TEMP_DIR, audioFile));
     
+    const fullPath = path.join(TEMP_DIR, audioFile);
     res.json({
       success: true,
       title,
       audioUrl: `/temp/${audioFile}`,
-      filepath: path.join(TEMP_DIR, audioFile),
+      filepath: fullPath,
       duration,
       size: (stats.size / 1024 / 1024).toFixed(1) + 'MB'
     });
@@ -284,33 +294,59 @@ app.post('/api/extract-audio', async (req, res) => {
 
 // ====== MERGE AUDIO + VIDEO ======
 app.post('/api/merge-audio', async (req, res) => {
-  const { videoPath, audioPath, outputPath } = req.body;
+  const { videoPath, audioPath, audioUrl } = req.body;
   
   try {
+    // Validate video
     if (!videoPath || !fs.existsSync(videoPath)) {
-      throw new Error('Video file not found: ' + videoPath);
+      throw new Error('ভিডিও ফাইল পাওয়া যায়নি: ' + videoPath);
     }
     
-    // Audio can be a URL or local path
+    // Resolve audio path
     let localAudioPath = audioPath;
-    if (audioPath && audioPath.startsWith('/temp/')) {
+    
+    // If audioPath is a /temp/ URL, convert to local path
+    if (audioPath && (audioPath.startsWith('/temp/') || audioPath.startsWith('/app/temp/'))) {
       localAudioPath = path.join(TEMP_DIR, path.basename(audioPath));
     }
     
-    if (!localAudioPath || !fs.existsSync(localAudioPath)) {
-      throw new Error('Audio file not found: ' + audioPath);
+    // If still not found, try audioUrl
+    if ((!localAudioPath || !fs.existsSync(localAudioPath)) && audioUrl) {
+      if (audioUrl.startsWith('/temp/') || audioUrl.startsWith('/app/temp/')) {
+        localAudioPath = path.join(TEMP_DIR, path.basename(audioUrl));
+      } else {
+        localAudioPath = audioUrl; // external URL - ffmpeg can handle it
+      }
     }
     
-    const outFile = path.join(TEMP_DIR, path.basename(videoPath).replace('.mp4', '_merged.mp4'));
+    // List temp files for debugging
+    const tempFiles = fs.readdirSync(TEMP_DIR);
+    console.log('Temp files:', tempFiles.slice(0, 10));
+    console.log('Looking for audio:', localAudioPath);
     
-    // Merge: loop audio to match video length
+    if (!localAudioPath) throw new Error('অডিও path দেওয়া হয়নি');
+    
+    // For local files, check existence
+    if (!localAudioPath.startsWith('http') && !fs.existsSync(localAudioPath)) {
+      // Try to find by partial name in temp
+      const audioName = path.basename(localAudioPath);
+      const found = tempFiles.find(f => f.includes(audioName.split('.')[0]));
+      if (found) {
+        localAudioPath = path.join(TEMP_DIR, found);
+      } else {
+        throw new Error('অডিও ফাইল পাওয়া যায়নি। আবার অডিও যোগ করুন।');
+      }
+    }
+    
+    const outFile = path.join(TEMP_DIR, path.basename(videoPath).replace(/_muted|_merged/g, '').replace('.mp4', '_merged.mp4'));
+    
     const cmd = `ffmpeg -i "${videoPath}" -stream_loop -1 -i "${localAudioPath}" -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 192k -shortest "${outFile}" -y`;
     
+    console.log('Merging:', cmd);
     await execAsync(cmd, { timeout: 180000 });
     
-    if (!fs.existsSync(outFile)) throw new Error('Merge output not created');
+    if (!fs.existsSync(outFile)) throw new Error('মার্জ আউটপুট তৈরি হয়নি');
     
-    // Delete original
     if (fs.existsSync(videoPath) && videoPath !== outFile) {
       fs.unlinkSync(videoPath);
     }
