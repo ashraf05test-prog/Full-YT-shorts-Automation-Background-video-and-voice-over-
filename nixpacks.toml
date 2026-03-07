@@ -1,13 +1,9 @@
-# nixpacks.toml - Fixed for Railway
+
 [phases.setup]
-nixPkgs = ["ffmpeg", "python310"]
+nixPkgs = ["ffmpeg", "python310", "python310Packages.pip", "python310Packages.yt-dlp"]
 
 [phases.install]
-cmds = [
-  "python3 -m ensurepip --upgrade",
-  "python3 -m pip install yt-dlp",
-  "npm install"
-]
+cmds = ["npm install"]
 
 [start]
 cmd = "node server.js"
