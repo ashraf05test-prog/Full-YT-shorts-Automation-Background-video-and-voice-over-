@@ -332,9 +332,13 @@ textarea.input{resize:none;min-height:80px}
   <div class="card">
     <div class="card-title">📁 Google Drive সোর্স</div>
     <div style="margin-bottom:8px">
-      <label class="upload-form-label">Drive Folder ID</label>
-      <input class="input" id="schedFolderId" placeholder="Google Drive Folder ID (ফোল্ডার লিংক থেকে নিন)">
-      <div style="font-size:11px;color:var(--text2);margin-top:4px">ফোল্ডার লিংক: drive.google.com/drive/folders/<b>এই অংশটুকু</b></div>
+      <label class="upload-form-label">📹 ভিডিও Folder ID</label>
+      <input class="input" id="schedFolderId" placeholder="ভিডিও ফোল্ডারের ID">
+      <div style="font-size:11px;color:var(--text2);margin-top:4px">drive.google.com/drive/folders/<b>এই অংশটুকু</b></div>
+    </div>
+    <div style="margin-bottom:8px">
+      <label class="upload-form-label">🎵 অডিও Folder ID (র‍্যান্ডম নেবে)</label>
+      <input class="input" id="schedAudioFolderId" placeholder="অডিও ফোল্ডারের ID (ঐচ্ছিক)">
     </div>
     <div style="margin-bottom:8px">
       <label class="upload-form-label">প্রতিবার সর্বোচ্চ কতটি ভিডিও</label>
@@ -1259,6 +1263,7 @@ async function runAutoUpload() {
   SCHED.running = true;
 
   const folderId = document.getElementById('schedFolderId').value.trim();
+  const audioFolderId = document.getElementById('schedAudioFolderId').value.trim();
   const maxVids = parseInt(document.getElementById('schedMaxVids').value) || 3;
   const privacy = document.getElementById('schedPrivacy').value;
   const deleteAfter = document.getElementById('schedDeleteToggle').classList.contains('on');
@@ -1269,13 +1274,21 @@ async function runAutoUpload() {
   const aiService = s.geminiKey ? 'gemini' : s.grokKey ? 'grok' : s.openaiKey ? 'openai' : null;
   const aiKey = s.geminiKey || s.grokKey || s.openaiKey || null;
 
-  if (!folderId) { schedLog('✗ Drive Folder ID নেই!', true); SCHED.running = false; return; }
+  if (!folderId) { schedLog('✗ ভিডিও Folder ID নেই!', true); SCHED.running = false; return; }
 
   try {
     const r = await fetch(backend + '/api/drive/auto-upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ folderId, maxVideos: maxVids, privacy, deleteAfterUpload: deleteAfter, aiService: useAI ? aiService : null, aiKey: useAI ? aiKey : null })
+      body: JSON.stringify({
+        folderId,
+        audioFolderId: audioFolderId || null,
+        maxVideos: maxVids,
+        privacy,
+        deleteAfterUpload: deleteAfter,
+        aiService: useAI ? aiService : null,
+        aiKey: useAI ? aiKey : null
+      })
     });
     if (!r.ok) throw new Error(await r.text());
     const { jobId } = await r.json();
@@ -1283,7 +1296,7 @@ async function runAutoUpload() {
     schedLog('⏳ আপলোড হচ্ছে...');
 
     // Poll
-    const maxWait = 30 * 60 * 1000; // 30 min
+    const maxWait = 30 * 60 * 1000;
     const start = Date.now();
     while (Date.now() - start < maxWait) {
       await new Promise(res => setTimeout(res, 5000));
