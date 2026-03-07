@@ -2109,18 +2109,24 @@ async function confirmAudioAssign() {
   
   try {
     const audio = state.audios.find(a=>a.id===state.selectedAudioId);
+    if (!audio) throw new Error('অডিও খুঁজে পাওয়া যায়নি');
+    
+    const toastId = toast('অডিও মার্জ হচ্ছে...', 'info');
+    
     const res = await fetch(`${getBackendUrl()}/api/merge-audio`, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
         videoPath: v.filepath,
-        audioPath: audio?.filepath || audio?.url,
-        outputPath: v.filepath?.replace('.mp4', '_final.mp4')
+        audioPath: audio.filepath || audio.url
       })
     });
-    if (!res.ok) throw new Error(await res.text());
+    
     const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'মার্জ ব্যর্থ');
+    
     v.filepath = data.outputPath || v.filepath;
+    v.filename = data.filename || v.filename;
     toast('✅ অডিও যোগ হয়েছে!', 'success');
   } catch (err) {
     toast('মার্জ ত্রুটি: ' + err.message, 'error');
