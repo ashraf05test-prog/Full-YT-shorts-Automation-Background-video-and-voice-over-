@@ -717,9 +717,38 @@ async function triggerAutoUpload(cfg) {
         tempAllFiles.push(mergedPath);
         console.log('[SCHED] Final merge done ✓');
 
-        // AI meta — audio filename দেখে title
-        const rawTitle = randomAudio.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
-        let meta = { title: rawTitle, description: '', hashtags: [], tags: [] };
+        // AI meta — audio filename দেখে title/hashtag/tags
+        const rawTitle = randomAudio.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ').trim();
+
+        // ===== Full Fallback (AI fail হলেও এটা use হবে) =====
+        const fallbackHashtags = [
+          '#shorts','#islamicshorts','#waz','#islamicvideo','#quran',
+          '#allah','#islam','#muslim','#bangla','#bangladesh',
+          '#viral','#islamicmotivation','#deen','#alhamdulillah','#subhanallah',
+          '#islamiccontent','#islamicquotes','#hadith','#sunnah','#namaz'
+        ];
+        const fallbackTags = [
+          'islamic shorts','bangla waz','islamic motivation','quran','allah',
+          'muslim','bangladesh','viral islamic','waz mahfil','islamic video bangla',
+          'deen','hadith','sunnah','islamic quotes','bangla islamic video',
+          'ওয়াজ','ইসলামিক শর্টস','বাংলা ওয়াজ','ইসলামিক মোটিভেশন','quran recitation',
+          'islamic reminder','allah akbar','subhanallah','alhamdulillah','short islamic video'
+        ];
+        const fallbackTitleOptions = [
+          `☪️ ${rawTitle} | বাংলা ইসলামিক শর্টস`,
+          `🤲 ${rawTitle} | ইসলামিক মোটিভেশন`,
+          `📿 ${rawTitle} | ওয়াজ মাহফিল`,
+          `🕌 ${rawTitle} | বাংলা ওয়াজ`,
+          `✨ ${rawTitle} | ইসলামিক ভিডিও`,
+        ];
+        const fallbackDesc = `আল্লাহর পথে থাকুন, সঠিক পথ বেছে নিন।\nইসলামের আলোয় জীবন সাজান।\nআল্লাহু আকবার ☪️ | সূরা ও হাদিসের আলোকে।`;
+
+        let meta = {
+          title: fallbackTitleOptions[Math.floor(Math.random() * fallbackTitleOptions.length)].substring(0, 100),
+          description: fallbackDesc,
+          hashtags: fallbackHashtags,
+          tags: fallbackTags
+        };
 
         if (cfg.aiService && cfg.aiKey) {
           try {
@@ -746,9 +775,18 @@ async function triggerAutoUpload(cfg) {
             }
             if (aiText) {
               const parsed = JSON.parse(aiText.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim());
-              meta = { ...meta, ...parsed };
+              // AI সফল হলে replace করো — কিন্তু empty field হলে fallback রাখো
+              meta = {
+                title: parsed.title || meta.title,
+                description: parsed.description || meta.description,
+                hashtags: (parsed.hashtags?.length >= 10) ? parsed.hashtags : meta.hashtags,
+                tags: (parsed.tags?.length >= 10) ? parsed.tags : meta.tags
+              };
+              console.log('[SCHED] AI meta generated ✓');
             }
-          } catch(e) { console.warn('[SCHED] AI failed:', e.message); }
+          } catch(e) {
+            console.warn('[SCHED] AI failed, using fallback:', e.message);
+          }
         }
 
         // Upload YouTube
