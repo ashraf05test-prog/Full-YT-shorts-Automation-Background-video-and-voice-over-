@@ -363,7 +363,7 @@ textarea.input{resize:none;min-height:80px}
     <div id="schedFolderMode">
       <div style="margin-bottom:8px">
         <label class="upload-form-label">📹 ভিডিও Folder ID</label>
-        <input class="input" id="schedFolderId" placeholder="ভিডিও ফোল্ডারের ID">
+        <input class="input" id="schedFolderId" placeholder="ভিডিও ফোল্ডারের ID" onblur="saveSched()">
         <div style="font-size:11px;color:var(--text2);margin-top:4px">drive.google.com/drive/folders/<b>এই অংশটুকু</b></div>
       </div>
     </div>
@@ -379,7 +379,7 @@ textarea.input{resize:none;min-height:80px}
 
     <div style="margin-bottom:8px">
       <label class="upload-form-label">🎵 অডিও Folder ID (র‍্যান্ডম নেবে)</label>
-      <input class="input" id="schedAudioFolderId" placeholder="অডিও ফোল্ডারের ID (ঐচ্ছিক)">
+      <input class="input" id="schedAudioFolderId" placeholder="অডিও ফোল্ডারের ID (ঐচ্ছিক)" onblur="saveSched()">
     </div>
     <div style="margin-bottom:8px" id="schedMaxVidsRow">
       <label class="upload-form-label">প্রতিবার সর্বোচ্চ কতটি ভিডিও</label>
