@@ -748,7 +748,14 @@ app.listen(PORT, () => {
 // ========== DRIVE AUTO UPLOAD SYSTEM ==========
 
 
-// ========== BAG 1: Mobile Video → Drive ==========
+// Drive token for direct browser upload
+app.get('/api/drive/token', (req, res) => {
+  const t = loadTokens();
+  if (!t.drive_access_token) return res.status(401).json({ error: 'Drive সংযুক্ত নয়' });
+  res.json({ token: t.drive_access_token });
+});
+
+
 app.post('/api/drive/upload-video', upload.single('video'), async (req, res) => {
   try {
     const fetch = (await import('node-fetch')).default;
