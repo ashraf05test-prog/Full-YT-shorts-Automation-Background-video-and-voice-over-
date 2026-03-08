@@ -682,7 +682,7 @@ function setSource(el, src) {
 
 function clearUrls() { document.getElementById('urlInput').value = ''; }
 
-// ========== BAG 1: Mobile Video → Drive ==========
+// ========== BAG 1: Mobile Video → Drive (Direct) ==========
 async function uploadMobileVideoToDrive(input) {
   const files = Array.from(input.files);
   if (!files.length) return;
@@ -696,23 +696,49 @@ async function uploadMobileVideoToDrive(input) {
   logBox.innerHTML = '';
   const log = (msg) => { logBox.innerHTML += msg + '<br>'; logBox.scrollTop = logBox.scrollHeight; };
 
+  // Get Drive token from server
+  let driveToken;
+  try {
+    const tr = await fetch(getBackend() + '/api/drive/token');
+    const td = await tr.json();
+    if (!td.token) throw new Error('Drive সংযুক্ত নয়');
+    driveToken = td.token;
+  } catch(e) { log('❌ ' + e.message); return; }
+
   log(`📁 ${files.length}টি ভিডিও পাওয়া গেছে...`);
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
-    log(`⬆️ (${i+1}/${files.length}) ${file.name} upload হচ্ছে...`);
-    try {
-      const formData = new FormData();
-      formData.append('video', file);
-      formData.append('folderId', folderId);
+    log(`⬆️ (${i+1}/${files.length}) ${file.name}...`);
 
-      const res = await fetch(getBackend() + '/api/drive/upload-video', {
+    try {
+      // Step 1: Initiate resumable upload
+      const meta = JSON.stringify({ name: file.name, parents: [folderId] });
+      const initRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
         method: 'POST',
-        body: formData
+        headers: {
+          'Authorization': `Bearer ${driveToken}`,
+          'Content-Type': 'application/json',
+          'X-Upload-Content-Type': file.type || 'video/mp4',
+          'X-Upload-Content-Length': file.size
+        },
+        body: meta
       });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || 'Upload failed');
-      log(`✅ ${file.name} → Drive সফল!`);
+      if (!initRes.ok) throw new Error('Upload init failed: ' + initRes.status);
+      const uploadUrl = initRes.headers.get('location');
+
+      // Step 2: Upload file directly
+      const upRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': file.type || 'video/mp4',
+          'Content-Length': file.size
+        },
+        body: file
+      });
+      if (!upRes.ok) throw new Error('Upload failed: ' + upRes.status);
+      const data = await upRes.json();
+      log(`✅ ${file.name} → Drive! (ID: ${data.id?.substring(0,10)}...)`);
     } catch(e) {
       log(`❌ ${file.name}: ${e.message}`);
     }
@@ -1321,11 +1347,12 @@ function initSched() {
   if (s.schedSlots) SCHED.slots = s.schedSlots;
   if (s.schedDays) SCHED.days = s.schedDays;
   if (s.schedFolderId) document.getElementById('schedFolderId').value = s.schedFolderId;
+  if (s.schedAudioFolderId) document.getElementById('schedAudioFolderId').value = s.schedAudioFolderId;
   if (s.schedMaxVids) document.getElementById('schedMaxVids').value = s.schedMaxVids;
   if (s.schedPrivacy) document.getElementById('schedPrivacy').value = s.schedPrivacy;
   if (s.schedDeleteAfter === false) document.getElementById('schedDeleteToggle').classList.remove('on');
   if (s.schedAI === false) document.getElementById('schedAIToggle').classList.remove('on');
-  if (s.schedEnabled) { document.getElementById('schedMasterToggle').classList.add('on'); startSchedTimer(); }
+  if (s.schedEnabled) { document.getElementById('schedMasterToggle').classList.add('on'); document.getElementById('schedStatusText').textContent = '✅ চালু আছে'; startSchedTimer(); }
   renderDays(); renderSlots();
 }
 
@@ -1354,7 +1381,7 @@ function saveSched() {
     aiService: document.getElementById('schedAIToggle').classList.contains('on') ? (gs().geminiKey ? 'gemini' : gs().grokKey ? 'grok' : gs().openaiKey ? 'openai' : null) : null,
     aiKey: document.getElementById('schedAIToggle').classList.contains('on') ? (gs().geminiKey || gs().grokKey || gs().openaiKey || null) : null
   };
-  ss({ schedSlots: SCHED.slots, schedDays: SCHED.days, schedFolderId: cfg.folderId, schedMaxVids: cfg.maxVideos, schedPrivacy: cfg.privacy, schedDeleteAfter: cfg.deleteAfterUpload, schedAI: cfg.aiService !== null, schedEnabled: cfg.enabled });
+  ss({ schedSlots: SCHED.slots, schedDays: SCHED.days, schedFolderId: cfg.folderId, schedAudioFolderId: cfg.audioFolderId, schedMaxVids: cfg.maxVideos, schedPrivacy: cfg.privacy, schedDeleteAfter: cfg.deleteAfterUpload, schedAI: cfg.aiService !== null, schedEnabled: cfg.enabled });
   fetch(getBackend() + '/api/schedule/save', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfg)
