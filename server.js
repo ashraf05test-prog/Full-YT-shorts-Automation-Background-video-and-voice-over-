@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const multer = require('multer');
+const upload = multer({ dest: path.join(__dirname, 'temp') });
 const fs = require('fs');
 const { exec } = require('child_process');
 const { promisify } = require('util');
@@ -745,6 +747,54 @@ app.listen(PORT, () => {
 
 // ========== DRIVE AUTO UPLOAD SYSTEM ==========
 
+
+// ========== BAG 1: Mobile Video → Drive ==========
+app.post('/api/drive/upload-video', upload.single('video'), async (req, res) => {
+  try {
+    const fetch = (await import('node-fetch')).default;
+    const t = loadTokens();
+    const driveToken = t.drive_access_token;
+    if (!driveToken) throw new Error('Drive সংযুক্ত নয়');
+
+    const folderId = req.body.folderId;
+    if (!folderId) throw new Error('Folder ID নেই');
+
+    const file = req.file;
+    if (!file) throw new Error('ফাইল পাওয়া যায়নি');
+
+    const fileName = Buffer.from(file.originalname, 'latin1').toString('utf8');
+    const fileBuffer = fs.readFileSync(file.path);
+    const mimeType = file.mimetype || 'video/mp4';
+
+    // Upload to Drive multipart
+    const metadata = { name: fileName, parents: [folderId] };
+    const boundary = 'vid_boundary_' + Date.now();
+    const metaPart = Buffer.from(`--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(metadata)}\r\n`);
+    const dataPart = Buffer.from(`--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n`);
+    const endPart = Buffer.from(`\r\n--${boundary}--`);
+    const body = Buffer.concat([metaPart, dataPart, fileBuffer, endPart]);
+
+    const upRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${driveToken}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`,
+        'Content-Length': body.length
+      },
+      body
+    });
+    const upData = await upRes.json();
+
+    // Cleanup temp
+    try { fs.unlinkSync(file.path); } catch {}
+
+    if (!upData.id) throw new Error(upData.error?.message || 'Upload failed');
+    res.json({ success: true, fileId: upData.id, fileName });
+  } catch(err) {
+    if (req.file) try { fs.unlinkSync(req.file.path); } catch {}
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // Save downloaded audio to Drive Audio Folder
 app.post('/api/drive/save-audio', async (req, res) => {
