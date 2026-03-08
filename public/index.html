@@ -230,6 +230,13 @@ textarea.input{resize:none;min-height:80px}
 
 <!-- 2. VIDEOS -->
 <div class="panel" id="panel-vid">
+  <!-- Mobile → Drive Upload -->
+  <div class="card" style="margin-bottom:10px">
+    <div class="card-title">📱 মোবাইল থেকে Drive-এ Upload</div>
+    <input type="file" accept="video/*" multiple id="mobileVideoInput" style="display:none" onchange="uploadMobileVideoToDrive(this)">
+    <button class="btn btn-green btn-full" onclick="document.getElementById('mobileVideoInput').click()">📁 ভিডিও বেছে নিন → Drive-এ যাবে</button>
+    <div id="mobileUploadLog" class="log-box" style="display:none;margin-top:8px;height:80px"></div>
+  </div>
   <div class="filter-row" id="videoFilters">
     <div class="chip on" onclick="setFilter(this,'all')">সব</div>
     <div class="chip" onclick="setFilter(this,'muted')">মিউট</div>
@@ -674,6 +681,45 @@ function setSource(el, src) {
 }
 
 function clearUrls() { document.getElementById('urlInput').value = ''; }
+
+// ========== BAG 1: Mobile Video → Drive ==========
+async function uploadMobileVideoToDrive(input) {
+  const files = Array.from(input.files);
+  if (!files.length) return;
+
+  const s = gs();
+  const folderId = s.schedFolderId || document.getElementById('schedFolderId')?.value?.trim();
+  if (!folderId) { toast('শিডিউল ট্যাবে Video Folder ID দিন!'); return; }
+
+  const logBox = document.getElementById('mobileUploadLog');
+  logBox.style.display = 'block';
+  logBox.innerHTML = '';
+  const log = (msg) => { logBox.innerHTML += msg + '<br>'; logBox.scrollTop = logBox.scrollHeight; };
+
+  log(`📁 ${files.length}টি ভিডিও পাওয়া গেছে...`);
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    log(`⬆️ (${i+1}/${files.length}) ${file.name} upload হচ্ছে...`);
+    try {
+      const formData = new FormData();
+      formData.append('video', file);
+      formData.append('folderId', folderId);
+
+      const res = await fetch(getBackend() + '/api/drive/upload-video', {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Upload failed');
+      log(`✅ ${file.name} → Drive সফল!`);
+    } catch(e) {
+      log(`❌ ${file.name}: ${e.message}`);
+    }
+  }
+  log('🎉 সব শেষ!');
+  input.value = '';
+}
 
 async function downloadAudioToDrive() {
   const url = document.getElementById('urlInput').value.trim().split('\n')[0].trim();
