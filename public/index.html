@@ -259,14 +259,11 @@ textarea.input{resize:none;min-height:80px}
 <!-- 3. AUDIO -->
 <div class="panel" id="panel-audio">
   <div class="card">
-    <div class="card-title">🔗 অডিও URL</div>
-    <input class="input" id="audioUrlInput" placeholder="YouTube/TikTok URL">
-    <button class="btn btn-purple btn-full" style="margin-top:8px" onclick="extractAudio()">🎵 অডিও এক্সট্রাক্ট</button>
-  </div>
-  <div class="card">
-    <div class="card-title">📂 লোকাল ফাইল</div>
-    <input type="file" accept="audio/*" id="audioFileInput" style="display:none" onchange="loadLocalAudio(this)">
-    <button class="btn btn-ghost btn-full" onclick="document.getElementById('audioFileInput').click()">📁 ফাইল বেছে নিন</button>
+    <div class="card-title">📱 মোবাইল থেকে Audio → Drive</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px">যেকোনো app দিয়ে waz audio download করো → এখানে select করো → Drive Audio Folder-এ যাবে</div>
+    <input type="file" accept="audio/*" multiple id="mobileAudioInput" style="display:none" onchange="uploadMobileAudioToDrive(this)">
+    <button class="btn btn-full" style="background:#7c3aed;color:#fff" onclick="document.getElementById('mobileAudioInput').click()">🎵 Audio বেছে নিন → Drive-এ যাবে</button>
+    <div id="audioUploadLog" class="log-box" style="display:none;margin-top:8px;height:100px"></div>
   </div>
   <div class="sec-title">আমার অডিও লাইব্রেরি</div>
   <div id="audioList"><div style="text-align:center;padding:30px;color:var(--text2)">অডিও নেই</div></div>
@@ -682,7 +679,66 @@ function setSource(el, src) {
 
 function clearUrls() { document.getElementById('urlInput').value = ''; }
 
-// ========== BAG 1: Mobile Video → Drive (Direct) ==========
+// ========== Audio → Drive (Direct) ==========
+async function uploadMobileAudioToDrive(input) {
+  const files = Array.from(input.files);
+  if (!files.length) return;
+
+  const s = gs();
+  const folderId = s.schedAudioFolderId || document.getElementById('schedAudioFolderId')?.value?.trim();
+  if (!folderId) { toast('শিডিউল ট্যাবে Audio Folder ID দিন!'); return; }
+
+  const logBox = document.getElementById('audioUploadLog');
+  logBox.style.display = 'block';
+  logBox.innerHTML = '';
+  const log = (msg) => { logBox.innerHTML += msg + '<br>'; logBox.scrollTop = logBox.scrollHeight; };
+
+  // Get Drive token
+  let driveToken;
+  try {
+    const tr = await fetch(getBackend() + '/api/drive/token');
+    const td = await tr.json();
+    if (!td.token) throw new Error('Drive সংযুক্ত নয়');
+    driveToken = td.token;
+  } catch(e) { log('❌ ' + e.message); return; }
+
+  log(`🎵 ${files.length}টি audio পাওয়া গেছে...`);
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    log(`⬆️ (${i+1}/${files.length}) ${file.name}...`);
+    try {
+      // Resumable upload directly to Drive
+      const meta = JSON.stringify({ name: file.name, parents: [folderId] });
+      const initRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${driveToken}`,
+          'Content-Type': 'application/json',
+          'X-Upload-Content-Type': file.type || 'audio/mpeg',
+          'X-Upload-Content-Length': file.size
+        },
+        body: meta
+      });
+      if (!initRes.ok) throw new Error('Init failed: ' + initRes.status);
+      const uploadUrl = initRes.headers.get('location');
+
+      const upRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type || 'audio/mpeg', 'Content-Length': file.size },
+        body: file
+      });
+      if (!upRes.ok) throw new Error('Upload failed: ' + upRes.status);
+      log(`✅ ${file.name} → Drive Audio Folder!`);
+    } catch(e) {
+      log(`❌ ${file.name}: ${e.message}`);
+    }
+  }
+  log('🎉 সব শেষ!');
+  input.value = '';
+}
+
+
 async function uploadMobileVideoToDrive(input) {
   const files = Array.from(input.files);
   if (!files.length) return;
