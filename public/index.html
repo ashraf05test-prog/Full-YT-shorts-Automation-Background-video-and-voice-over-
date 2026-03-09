@@ -216,6 +216,34 @@ textarea.input{resize:none;min-height:80px}
     </div>
   </div>
 
+  <!-- Channel Shorts Scraper -->
+  <div class="card" style="margin-top:10px">
+    <div class="card-title">📺 Channel থেকে Shorts Links</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px">YouTube Channel URL দাও → সব Shorts link বের হবে</div>
+    <input class="input" id="channelUrlInput" placeholder="https://youtube.com/@channelname বা channel ID" style="margin-bottom:8px">
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <input class="input" id="channelMaxLinks" type="number" value="50" min="1" max="200" style="width:80px" placeholder="Max">
+      <button class="btn btn-red btn-full" onclick="scrapeChannelShorts()">🔍 Shorts খুঁজো</button>
+    </div>
+    <div id="channelScrapeLog" style="font-size:12px;color:var(--text2);margin-bottom:8px"></div>
+    <div id="channelLinksList" style="display:none">
+      <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        <button class="btn btn-sm btn-ghost" onclick="selectAllChannelLinks()">☑ সব select</button>
+        <button class="btn btn-sm btn-ghost" onclick="copyAllChannelLinks()">📋 copy</button>
+      </div>
+      <div id="channelLinksContainer" style="max-height:200px;overflow-y:auto;background:#0d0d14;border-radius:8px;padding:8px;margin-bottom:10px"></div>
+      <!-- Drive Folder Input -->
+      <input class="input" id="channelDriveFolderId" placeholder="Drive Video Folder ID" style="margin-bottom:6px">
+      <input class="input" id="channelDriveAudioFolderId" placeholder="Drive Audio Folder ID" style="margin-bottom:10px">
+      <!-- Bulk Action Buttons -->
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-full" style="background:#2563eb;color:#fff" onclick="bulkDownloadToDrive('video')">🎬 Bulk Video → Drive</button>
+        <button class="btn btn-full" style="background:#7c3aed;color:#fff" onclick="bulkDownloadToDrive('audio')">🎵 Bulk Audio → Drive</button>
+      </div>
+      <div id="channelDriveLog" class="log-box" style="display:none;margin-top:8px;height:120px"></div>
+    </div>
+  </div>
+
   <div class="card" id="queueCard" style="display:none">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
       <div class="card-title" style="margin:0">⏳ ডাউনলোড কিউ</div>
@@ -1724,7 +1752,8 @@ async function runNow() {
     privacy: document.getElementById('schedPrivacy').value,
     deleteAfterUpload: document.getElementById('schedDeleteToggle').classList.contains('on'),
     aiService: document.getElementById('schedAIToggle').classList.contains('on') ? (gs().groqKey ? 'groq' : gs().geminiKey ? 'gemini' : gs().grokKey ? 'grok' : gs().openaiKey ? 'openai' : null) : null,
-    aiKey: document.getElementById('schedAIToggle').classList.contains('on') ? (gs().groqKey || gs().geminiKey || gs().grokKey || gs().openaiKey || null) : null
+    aiKey: document.getElementById('schedAIToggle').classList.contains('on') ? (gs().groqKey || gs().geminiKey || gs().grokKey || gs().openaiKey || null) : null,
+    tzOffset: -(new Date().getTimezoneOffset() / 60)
   };
 
   try {
@@ -1833,6 +1862,154 @@ function schedLog(msg, err) {
   if (err) d.style.color = 'var(--red)';
   box.appendChild(d);
   box.scrollTop = box.scrollHeight;
+}
+
+
+
+// ===== Bulk Download → Drive =====
+let bulkDriveRunning = false;
+
+async function bulkDownloadToDrive(type) {
+  if (bulkDriveRunning) { toast('আগেরটা চলছে...'); return; }
+
+  const selected = channelLinks.filter((_, i) => document.getElementById('cl_' + i)?.checked);
+  if (!selected.length) { toast('কোনো link select করোনি!'); return; }
+
+  const folderId = type === 'video'
+    ? document.getElementById('channelDriveFolderId').value.trim()
+    : document.getElementById('channelDriveAudioFolderId').value.trim();
+
+  if (!folderId) { toast(`Drive ${type === 'video' ? 'Video' : 'Audio'} Folder ID দিন!`); return; }
+
+  const log = document.getElementById('channelDriveLog');
+  log.style.display = 'block';
+  log.textContent = '';
+  bulkDriveRunning = true;
+
+  // Drive token নাও
+  let driveToken = '';
+  try {
+    const tr = await fetch(getBackend() + '/api/drive/token');
+    const td = await tr.json();
+    driveToken = td.token;
+    if (!driveToken) throw new Error('Drive connected নেই');
+  } catch(e) { log.textContent += '❌ Drive token error: ' + e.message + '\n'; bulkDriveRunning = false; return; }
+
+  let done = 0, failed = 0;
+
+  for (const link of selected) {
+    log.textContent += `⏳ [${done+1}/${selected.length}] ${link.title || link.url}\n`;
+    log.scrollTop = log.scrollHeight;
+
+    try {
+      // Step 1: Server-এ download করো
+      const dlRes = await fetch(getBackend() + '/api/download', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: link.url, audioOnly: type === 'audio', mute: type === 'video', quality: 'best' })
+      });
+      const { jobId } = await dlRes.json();
+
+      // Step 2: Job complete হওয়া পর্যন্ত wait
+      let filePath = '', fileName = '';
+      const start = Date.now();
+      while (Date.now() - start < 120000) {
+        await new Promise(r => setTimeout(r, 3000));
+        const jr = await fetch(getBackend() + '/api/job/' + jobId);
+        const job = await jr.json();
+        if (job.status === 'done') {
+          filePath = job.result.filepath;
+          fileName = job.result.filename || job.result.filepath?.split('/').pop() || 'file.mp4';
+          break;
+        }
+        if (job.status === 'error') throw new Error(job.error);
+      }
+      if (!filePath) throw new Error('Timeout');
+
+      // Step 3: Server থেকে file read করে Drive-এ upload
+      const upRes = await fetch(getBackend() + '/api/drive/upload-to-folder', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath, fileName, folderId, driveToken })
+      });
+      const upData = await upRes.json();
+      if (!upRes.ok) throw new Error(upData.error);
+
+      done++;
+      log.textContent += `✅ Done: ${fileName}\n`;
+    } catch(e) {
+      failed++;
+      log.textContent += `❌ Failed: ${e.message}\n`;
+    }
+    log.scrollTop = log.scrollHeight;
+  }
+
+  log.textContent += `\n🏁 সম্পন্ন! ✅ ${done} সফল, ❌ ${failed} ব্যর্থ`;
+  bulkDriveRunning = false;
+}
+
+// ===== Channel Shorts Scraper =====
+let channelLinks = [];
+
+async function scrapeChannelShorts() {
+  const url = document.getElementById('channelUrlInput').value.trim();
+  const max = parseInt(document.getElementById('channelMaxLinks').value) || 50;
+  if (!url) { toast('Channel URL দিন!'); return; }
+
+  const log = document.getElementById('channelScrapeLog');
+  log.textContent = '⏳ খোঁজা হচ্ছে...';
+  document.getElementById('channelLinksList').style.display = 'none';
+  channelLinks = [];
+
+  try {
+    const r = await fetch(getBackend() + '/api/channel/shorts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelUrl: url, maxLinks: max })
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error);
+
+    channelLinks = data.links || [];
+    if (!channelLinks.length) { log.textContent = '❌ কোনো Shorts পাওয়া যায়নি'; return; }
+
+    log.textContent = `✅ ${channelLinks.length}টি Shorts পাওয়া গেছে`;
+    renderChannelLinks();
+    document.getElementById('channelLinksList').style.display = 'block';
+  } catch(e) { log.textContent = '❌ ' + e.message; }
+}
+
+function renderChannelLinks() {
+  const container = document.getElementById('channelLinksContainer');
+  container.innerHTML = channelLinks.map((l, i) => `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #222;font-size:12px">
+      <input type="checkbox" id="cl_${i}" checked style="flex-shrink:0">
+      <div style="flex:1;overflow:hidden">
+        <div style="color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l.title || 'Shorts'}</div>
+        <div style="color:#888;font-size:10px">${l.url}</div>
+      </div>
+      ${l.duration ? `<span style="color:var(--yellow);flex-shrink:0">${l.duration}s</span>` : ''}
+    </div>`).join('');
+}
+
+function selectAllChannelLinks() {
+  channelLinks.forEach((_, i) => {
+    const cb = document.getElementById('cl_' + i);
+    if (cb) cb.checked = !cb.checked;
+  });
+}
+
+function addSelectedToDownload() {
+  const selected = channelLinks.filter((_, i) => document.getElementById('cl_' + i)?.checked);
+  if (!selected.length) { toast('কোনো link select করোনি!'); return; }
+  const textarea = document.getElementById('urlInput');
+  const existing = textarea.value.trim();
+  const newUrls = selected.map(l => l.url).join('\n');
+  textarea.value = existing ? existing + '\n' + newUrls : newUrls;
+  toast(`✅ ${selected.length}টি link যোগ হয়েছে!`);
+  switchTab('dl', document.querySelector('.nav-item'));
+}
+
+function copyAllChannelLinks() {
+  const urls = channelLinks.map(l => l.url).join('\n');
+  navigator.clipboard?.writeText(urls).then(() => toast(`📋 ${channelLinks.length}টি link copy হয়েছে!`));
 }
 
 // ===== SSE Live Log =====
