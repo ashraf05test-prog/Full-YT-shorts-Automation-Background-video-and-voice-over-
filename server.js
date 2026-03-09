@@ -237,10 +237,20 @@ app.post('/api/ai-generate', async (req, res) => {
     }
 
     try {
-      const p = JSON.parse(text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim());
+      // Clean and extract JSON
+      let clean = text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
+      // Remove bad control characters
+      clean = clean.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+      // Extract JSON object only
+      const jsonMatch = clean.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('No JSON found');
+      const p = JSON.parse(jsonMatch[0]);
       res.json({ title: p.title || '', description: p.description || '', hashtags: p.hashtags || [], tags: p.tags || [], category: p.category || '' });
     } catch {
-      res.json({ title: text.substring(0, 100), description: '', hashtags: (text.match(/#[^\s]+/g) || []).slice(0, 20), tags: [], category: '' });
+      // Last resort: extract what we can
+      const titleMatch = text.match(/"title"\s*:\s*"([^"]+)"/);
+      const hashTags = (text.match(/#[\w\u0980-\u09FF]+/g) || []).slice(0, 20);
+      res.json({ title: titleMatch?.[1] || '', description: '', hashtags: hashTags, tags: [], category: '' });
     }
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -490,7 +500,7 @@ function loadSchedConfig() {
   try {
     if (fs.existsSync(SCHED_FILE)) return JSON.parse(fs.readFileSync(SCHED_FILE, 'utf8'));
   } catch {}
-  return { enabled: false, slots: [], days: [0,1,2,3,4,5,6], folderId: '', audioFolderId: '', maxVideos: 3, privacy: 'private', deleteAfterUpload: true, aiService: null, aiKey: null };
+  return { enabled: false, slots: [], days: [0,1,2,3,4,5,6], folderId: '', audioFolderId: '', maxVideos: 3, privacy: 'private', deleteAfterUpload: false, aiService: null, aiKey: null };
 }
 
 function saveSchedConfig(cfg) {
@@ -797,7 +807,15 @@ async function triggerAutoUpload(cfg) {
               aiText = (await ar.json()).choices?.[0]?.message?.content || '';
             }
             if (aiText) {
-              const parsed = JSON.parse(aiText.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim());
+              // Clean bad control characters before parsing
+              const cleanText = aiText
+                .replace(/```json\n?/g,'').replace(/```\n?/g,'')
+                .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '') // remove bad control chars
+                .replace(/\n/g, '\\n') // escape literal newlines inside strings
+                .trim();
+              // Extract JSON object only
+              const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
+              const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : cleanText);
               // AI সফল হলে replace করো — কিন্তু empty field হলে fallback রাখো
               meta = {
                 title: parsed.title || meta.title,
