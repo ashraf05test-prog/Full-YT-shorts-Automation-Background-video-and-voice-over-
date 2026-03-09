@@ -52,7 +52,10 @@ app.post('/api/download', async (req, res) => {
 
   (async () => {
     try {
-      const outTemplate = path.join(TEMP_DIR, `${jobId}.%(ext)s`);
+      // Audio: title সহ filename, Video: jobId দিয়ে
+      const outTemplate = audioOnly
+        ? path.join(TEMP_DIR, `${jobId}_%(title)s.%(ext)s`)
+        : path.join(TEMP_DIR, `${jobId}.%(ext)s`);
 
       // Audio only mode
       if (audioOnly) {
@@ -751,7 +754,18 @@ async function triggerAutoUpload(cfg) {
         console.log('[SCHED] Final merge done ✓');
 
         // AI meta — audio filename দেখে title/hashtag/tags
-        const rawTitle = randomAudio.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ').replace(/\d{4}[\s_-]\d{2}[\s_-]\d{2}.*$/, '').replace(/AUDIO/gi, '').replace(/\s+/g, ' ').trim() || 'ইসলামিক ওয়াজ';
+        // Audio filename থেকে clean title বের করো
+        // Format: jobId_Title.mp3 → Title
+        // বা: AUDIO-2025-08-09.mp3 → পরিষ্কার করো
+        let rawTitle = randomAudio.name
+          .replace(/\.[^.]+$/, '')           // extension বাদ
+          .replace(/^[a-z0-9]+_[a-z0-9]+_/, '') // jobId prefix বাদ (e.g. 1234_abc_)
+          .replace(/^\d+_/, '')              // numeric prefix বাদ
+          .replace(/[_-]/g, ' ')             // underscore/dash → space
+          .replace(/\d{4}[\s]\d{2}[\s]\d{2}.*$/, '') // date suffix বাদ
+          .replace(/AUDIO/gi, '')            // "AUDIO" word বাদ
+          .replace(/\s+/g, ' ')             // extra space বাদ
+          .trim() || 'ইসলামিক ওয়াজ';
 
         // ===== Full Fallback (AI fail হলেও এটা use হবে) =====
         const fallbackHashtags = [
