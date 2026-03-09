@@ -53,13 +53,14 @@ app.post('/api/download', async (req, res) => {
   (async () => {
     try {
       // Audio: title সহ filename, Video: jobId দিয়ে
+      // Audio: title সহ filename (hashtag/special chars বাদ, max 60 chars), Video: jobId
       const outTemplate = audioOnly
-        ? path.join(TEMP_DIR, `${jobId}_%(title)s.%(ext)s`)
+        ? path.join(TEMP_DIR, `${jobId}_%(title).60s.%(ext)s`)
         : path.join(TEMP_DIR, `${jobId}.%(ext)s`);
 
       // Audio only mode
       if (audioOnly) {
-        const cmd = `yt-dlp -f "bestaudio/best" --extract-audio --audio-format mp3 --audio-quality 192K --no-playlist --retries 3 --socket-timeout 30 --no-warnings -o "${outTemplate}" "${url}"`;
+        const cmd = `yt-dlp -f "bestaudio/best" --extract-audio --audio-format mp3 --audio-quality 192K --no-playlist --retries 3 --socket-timeout 30 --no-warnings --replace-in-metadata "title" "#[^\\s]*" "" --replace-in-metadata "title" "\\|.*" "" -o "${outTemplate}" "${url}"`;
         console.log('[DL AUDIO]', url);
         await execAsync(cmd, { timeout: 120000 });
         const files = fs.readdirSync(TEMP_DIR);
