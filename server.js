@@ -1174,12 +1174,11 @@ draw = ImageDraw.Draw(bg)
 
 # Bengali font খুঁজো
 font_paths = [
-  '/usr/share/fonts/truetype/kalpurush/Kalpurush.ttf',
+  '/usr/share/fonts/truetype/lohit-bengali/Lohit-Bengali.ttf',
+  '/usr/share/fonts/truetype/fonts-beng-extra/MuktiNarrow.ttf',
   '/usr/share/fonts/truetype/noto/NotoSansBengali-Bold.ttf',
   '/usr/share/fonts/opentype/noto/NotoSansBengali-Bold.otf',
   '/usr/share/fonts/truetype/noto/NotoSansBengali-Regular.ttf',
-  '/usr/share/fonts/truetype/bengali/Lohit-Bengali.ttf',
-  '/usr/share/fonts/truetype/lohit-bengali/Lohit-Bengali.ttf',
   '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
   '/usr/share/fonts/opentype/unifont/unifont.otf',
 ]
