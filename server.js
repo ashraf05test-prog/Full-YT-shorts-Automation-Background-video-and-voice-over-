@@ -758,14 +758,18 @@ async function triggerAutoUpload(cfg) {
         // Audio filename থেকে clean title বের করো
         // Format: jobId_Title.mp3 → Title
         // বা: AUDIO-2025-08-09.mp3 → পরিষ্কার করো
+        // Audio filename: 1773064165163_gke79h47_Title.mp3 → Title
         let rawTitle = randomAudio.name
-          .replace(/\.[^.]+$/, '')           // extension বাদ
-          .replace(/^[a-z0-9]+_[a-z0-9]+_/, '') // jobId prefix বাদ (e.g. 1234_abc_)
-          .replace(/^\d+_/, '')              // numeric prefix বাদ
-          .replace(/[_-]/g, ' ')             // underscore/dash → space
-          .replace(/\d{4}[\s]\d{2}[\s]\d{2}.*$/, '') // date suffix বাদ
-          .replace(/AUDIO/gi, '')            // "AUDIO" word বাদ
-          .replace(/\s+/g, ' ')             // extra space বাদ
+          .replace(/\.[^.]+$/, '')               // extension বাদ
+          .replace(/^[\d]+_[a-z0-9]+_/i, '')     // jobId_hash_ prefix বাদ
+          .replace(/^[\d]+_/, '')                // numeric_ prefix বাদ
+          .replace(/^[a-z0-9]{6,}_/i, '')        // hash_ prefix বাদ
+          .replace(/[_]/g, ' ')                  // underscore → space
+          .replace(/^-+/, '')                    // leading dash বাদ
+          .replace(/\d{4}-\d{2}-\d{2}.*$/, '') // date suffix বাদ
+          .replace(/AUDIO/gi, '')                // "AUDIO" word বাদ
+          .replace(/^[-\d\s:]+$/, '')           // শুধু date/number হলে empty
+          .replace(/\s+/g, ' ')                 // extra space বাদ
           .trim() || 'ইসলামিক ওয়াজ';
 
         // ===== Full Fallback (AI fail হলেও এটা use হবে) =====
