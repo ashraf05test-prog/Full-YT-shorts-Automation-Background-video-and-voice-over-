@@ -891,6 +891,35 @@ async function triggerAutoUpload(cfg) {
   return jobId;
 }
 
+// ========== SSE LIVE LOG ==========
+const sseClients = new Set();
+
+// Override console.log to broadcast to SSE clients
+const origLog = console.log;
+const origWarn = console.warn;
+const origError = console.error;
+
+function broadcastLog(msg) {
+  const data = JSON.stringify({ msg, time: new Date().toISOString() });
+  sseClients.forEach(res => {
+    try { res.write(`data: ${data}\n\n`); } catch {}
+  });
+}
+
+console.log = (...args) => { origLog(...args); broadcastLog(args.join(' ')); };
+console.warn = (...args) => { origWarn(...args); broadcastLog('⚠️ ' + args.join(' ')); };
+console.error = (...args) => { origError(...args); broadcastLog('❌ ' + args.join(' ')); };
+
+app.get('/api/logs/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.write('data: {"msg":"✅ Live log connected","time":"' + new Date().toISOString() + '"}\n\n');
+  sseClients.add(res);
+  req.on('close', () => sseClients.delete(res));
+});
+
 // ========== START ==========
 app.listen(PORT, () => {
   console.log(`🚀 YouTube Automation Server running on port ${PORT}`);
