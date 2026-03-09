@@ -1572,6 +1572,7 @@ function saveSched() {
     days: SCHED.days,
     folderId: document.getElementById('schedFolderId').value.trim(),
     audioFolderId: document.getElementById('schedAudioFolderId').value.trim() || null,
+    tzOffset: -(new Date().getTimezoneOffset() / 60), // browser timezone auto detect
     maxVideos: parseInt(document.getElementById('schedMaxVids').value) || 3,
     privacy: document.getElementById('schedPrivacy').value,
     deleteAfterUpload: document.getElementById('schedDeleteToggle').classList.contains('on'),
@@ -1653,8 +1654,8 @@ function addTimeSlot() {
           ${['00','05','10','15','20','25','30','35','40','45','50','55'].map(m=>'<option value="'+m+'">'+m+'</option>').join('')}
         </select>
         <select id="tpAmPm" style="flex:1;padding:10px;border-radius:8px;background:#2a2a3e;color:#fff;border:1px solid #444;font-size:16px">
-          <option value="AM">সকাল AM</option>
-          <option value="PM">বিকাল PM</option>
+          <option value="AM">সকাল (AM)</option>
+          <option value="PM" selected>দুপুর/বিকাল/রাত (PM)</option>
         </select>
       </div>
       <div style="display:flex;gap:8px">
@@ -1671,7 +1672,11 @@ function addTimeSlot() {
     if (ampm === 'AM' && hour24 === 12) hour24 = 0;
     if (ampm === 'PM' && hour24 !== 12) hour24 += 12;
     const time = String(hour24).padStart(2,'0') + ':' + m;
-    const label = `${h}:${m} ${ampm === 'AM' ? 'সকাল' : 'বিকাল/রাত'}`;
+    let hour24b = parseInt(h);
+    if (ampm === 'AM' && parseInt(h) === 12) hour24b = 0;
+    if (ampm === 'PM' && parseInt(h) !== 12) hour24b += 12;
+    const banglaTime = hour24b < 6 ? 'রাত' : hour24b < 12 ? 'সকাল' : hour24b < 17 ? 'দুপুর' : hour24b < 20 ? 'বিকাল' : 'রাত';
+    const label = `${h}:${m} ${banglaTime}`;
     SCHED.slots.push({ time, label, on: true });
     SCHED.slots.sort((a, b) => a.time.localeCompare(b.time));
     renderSlots(); saveSched();
