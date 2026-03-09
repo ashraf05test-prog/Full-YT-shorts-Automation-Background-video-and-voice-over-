@@ -2112,7 +2112,7 @@ async function connectYouTube() {
   const clientId = s.ytClientId || document.getElementById('ytClientId').value.trim();
   if (!clientId) { toast('Settings-এ Client ID দিন!'); return; }
   const backend = getBackend();
-  const scope = encodeURIComponent('https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube');
+  const scope = encodeURIComponent('https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtubepartner');
   const redirect = encodeURIComponent(backend + '/auth/youtube/callback');
   const url = `https://accounts.google.com/o/oauth2/auth?client_id=${clientId}&redirect_uri=${redirect}&scope=${scope}&response_type=code&access_type=offline&prompt=consent`;
   window.open(url, '_blank', 'width=500,height=600');
