@@ -1081,7 +1081,7 @@ app.post('/api/drive/auto-upload', async (req, res) => {
         );
         const d = await r.json();
         const files = d.files || [];
-        return mimeFilter ? files.filter(f => f.mimeType?.includes(mimeFilter) || f.name?.match(mimeFilter)) : files;
+        return mimeFilter ? files.filter(f => (typeof mimeFilter === "string" ? f.mimeType?.includes(mimeFilter) : f.mimeType?.match(mimeFilter)) || f.name?.match(mimeFilter)) : files;
       }
 
       // Helper: download from Drive
