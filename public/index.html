@@ -616,6 +616,7 @@ window.addEventListener('DOMContentLoaded', () => {
   renderAudios();
   checkConnection();
   initSched();
+  setTimeout(startLiveLog, 2000); // SSE live log
 });
 
 function loadSettings() {
@@ -1832,6 +1833,27 @@ function schedLog(msg, err) {
   if (err) d.style.color = 'var(--red)';
   box.appendChild(d);
   box.scrollTop = box.scrollHeight;
+}
+
+// ===== SSE Live Log =====
+let sseSource = null;
+function startLiveLog() {
+  if (sseSource) sseSource.close();
+  const backend = getBackend();
+  if (!backend) return;
+  sseSource = new EventSource(backend + '/api/logs/stream');
+  sseSource.onmessage = (e) => {
+    try {
+      const { msg } = JSON.parse(e.data);
+      if (msg.includes('[SCHED]') || msg.includes('Uploaded') || msg.includes('merge') || msg.includes('AI') || msg.includes('Error') || msg.includes('error')) {
+        const isErr = msg.includes('Error') || msg.includes('error') || msg.includes('failed');
+        schedLog('🔴 ' + msg, isErr);
+      }
+    } catch {}
+  };
+  sseSource.onerror = () => {
+    setTimeout(startLiveLog, 5000); // reconnect
+  };
 }
 
 // ========== SETTINGS ==========
