@@ -537,21 +537,33 @@ async function checkServerSchedule() {
   const cfg = loadSchedConfig();
   if (!cfg.enabled || !cfg.slots?.length) return;
 
+  // ⚠️ Railway UTC timezone — Bangladesh = UTC+6
+  const tzOffset = parseInt(cfg.tzOffset ?? 6); // default Bangladesh +6
   const now = new Date();
-  const day = now.getDay();
+  const localNow = new Date(now.getTime() + tzOffset * 60 * 60 * 1000);
+  const day = localNow.getUTCDay();
   if (!cfg.days?.includes(day)) return;
 
-  const cur = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
-  const today = now.toDateString();
+  const curH = localNow.getUTCHours();
+  const curM = localNow.getUTCMinutes();
+  const cur = String(curH).padStart(2,'0') + ':' + String(curM).padStart(2,'0');
+  const today = localNow.toUTCString().split(' ').slice(0,4).join(' ');
+
+  console.log('[SCHED] Local time check:', cur, '| UTC:', now.toISOString());
 
   for (const slot of cfg.slots) {
     if (!slot.on) continue;
-    if (slot.time !== cur) continue;
+    // 2 minute window — 30sec interval miss এড়াতে
+    const [sh, sm] = slot.time.split(':').map(Number);
+    const slotMin = sh * 60 + sm;
+    const curMin = curH * 60 + curM;
+    if (Math.abs(curMin - slotMin) > 1) continue;
+
     const key = slot.time + '_' + today;
-    if (lastRunMap[key]) continue; // already ran today at this time
+    if (lastRunMap[key]) continue;
 
     lastRunMap[key] = true;
-    console.log('[SCHED] Triggering upload for slot:', slot.time);
+    console.log('[SCHED] Triggering upload for slot:', slot.time, '| Local:', cur);
     await triggerAutoUpload(cfg);
   }
 }
