@@ -424,6 +424,54 @@ async function backupTokensToDrive(tokens) {
   } catch (e) { console.warn('[TOKEN] Backup error:', e.message); }
 }
 
+async function refreshYouTubeToken() {
+  try {
+    const t = loadTokens();
+    if (!t.refresh_token) return null;
+    const r = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      body: new URLSearchParams({ refresh_token: t.refresh_token, client_id: process.env.YT_CLIENT_ID, client_secret: process.env.YT_CLIENT_SECRET, grant_type: 'refresh_token' })
+    });
+    const d = await r.json();
+    if (d.access_token) {
+      saveTokens({ ...t, access_token: d.access_token });
+      console.log('[TOKEN] YouTube token refreshed ✅');
+      return d.access_token;
+    }
+  } catch(e) { console.warn('[TOKEN] YT refresh failed:', e.message); }
+  return null;
+}
+
+async function refreshDriveToken() {
+  try {
+    const t = loadTokens();
+    if (!t.drive_refresh_token) return null;
+    const r = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      body: new URLSearchParams({ refresh_token: t.drive_refresh_token, client_id: process.env.DRIVE_CLIENT_ID || process.env.YT_CLIENT_ID, client_secret: process.env.DRIVE_CLIENT_SECRET || process.env.YT_CLIENT_SECRET, grant_type: 'refresh_token' })
+    });
+    const d = await r.json();
+    if (d.access_token) {
+      saveTokens({ ...t, drive_access_token: d.access_token });
+      console.log('[TOKEN] Drive token refreshed ✅');
+      return d.access_token;
+    }
+  } catch(e) { console.warn('[TOKEN] Drive refresh failed:', e.message); }
+  return null;
+}
+
+async function getValidYTToken() {
+  const t = loadTokens();
+  if (t.access_token) return t.access_token;
+  return await refreshYouTubeToken();
+}
+
+async function getValidDriveToken() {
+  const t = loadTokens();
+  if (t.drive_access_token) return t.drive_access_token;
+  return await refreshDriveToken();
+}
+
 async function restoreTokensFromDrive() {
   try {
     const fetch = (await import('node-fetch')).default;
@@ -454,7 +502,18 @@ async function restoreTokensFromDrive() {
 }
 
 // On startup, try to restore tokens from Drive
-restoreTokensFromDrive();
+restoreTokensFromDrive().then(() => {
+  // Startup-এ token refresh করো
+  const t = loadTokens();
+  if (t.refresh_token) refreshYouTubeToken().catch(() => {});
+  if (t.drive_refresh_token) refreshDriveToken().catch(() => {});
+  // প্রতি ৩০ মিনিটে refresh
+  setInterval(() => {
+    const t2 = loadTokens();
+    if (t2.refresh_token) refreshYouTubeToken().catch(() => {});
+    if (t2.drive_refresh_token) refreshDriveToken().catch(() => {});
+  }, 30 * 60 * 1000);
+});
 
 // ========== YOUTUBE OAUTH ==========
 app.get('/auth/youtube/callback', async (req, res) => {
@@ -588,11 +647,11 @@ async function triggerAutoUpload(cfg) {
   (async () => {
     try {
       const fetch = (await import('node-fetch')).default;
-      const t = loadTokens();
-      const driveToken = t.drive_access_token;
-      const ytToken = t.access_token;
-
+      let driveToken = await getValidDriveToken();
+      if (!driveToken) driveToken = await refreshDriveToken();
       if (!driveToken) throw new Error('Drive সংযুক্ত নয়');
+      let ytToken = await getValidYTToken();
+      if (!ytToken) ytToken = await refreshYouTubeToken();
       if (!ytToken) throw new Error('YouTube সংযুক্ত নয়');
       if (!cfg.folderId) throw new Error('Video Folder ID নেই');
 
@@ -606,10 +665,9 @@ async function triggerAutoUpload(cfg) {
 
       if (!allVideos.length) { jobs[jobId] = { status: 'error', error: 'Drive-এ কোনো ভিডিও নেই' }; return; }
 
-      // Shuffle all videos — maxVideos দিয়ে cap করো
-      const maxV = parseInt(cfg.maxVideos) || 5;
-      const videos = allVideos.sort(() => Math.random() - 0.5).slice(0, maxV);
-      console.log(`[SCHED] Total videos available: ${allVideos.length} | Using max: ${maxV}`);
+      // Shuffle all videos — audio duration অনুযায়ী যতটা দরকার ততটা নেবে
+      const videos = allVideos.sort(() => Math.random() - 0.5);
+      console.log(`[SCHED] Total videos available: ${allVideos.length}`);
 
       // Get audio files
       let audioFiles = [];
@@ -670,14 +728,11 @@ async function triggerAutoUpload(cfg) {
         const selectedVideoPaths = [];
         const usedDriveVideoIds = [];
 
-        // maxVideos cap করো — shuffle করে নাও
-        const maxV2 = parseInt(cfg.maxVideos) || 5;
         const shuffledVideos = [...allVideos].sort(() => Math.random() - 0.5);
-        // প্রতিটা video unique ID দিয়ে deduplicate করো
         const uniqueVideos = Array.from(new Map(shuffledVideos.map(v => [v.id, v])).values());
         console.log(`[SCHED] Unique videos: ${uniqueVideos.length}`);
 
-        let videoPool = uniqueVideos.slice(0, Math.min(maxV2 * 3, uniqueVideos.length));
+        let videoPool = [...uniqueVideos];
         const usedVideoIds = new Set();
         let loopCount = 0;
         while (totalVideoDuration < audioDuration && loopCount < 50) {
@@ -1155,6 +1210,115 @@ print('OK')
   }
 });
 
+
+// ========== IMAGE SHARE ==========
+const SHARE_DIR = path.join(__dirname, 'shares');
+if (!fs.existsSync(SHARE_DIR)) fs.mkdirSync(SHARE_DIR, { recursive: true });
+app.use('/shares', express.static(SHARE_DIR));
+
+const shareUpload = multer({
+  dest: SHARE_DIR,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Image only'));
+  }
+});
+
+app.post('/api/share/upload', shareUpload.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No image' });
+  const ext = req.file.originalname.split('.').pop().toLowerCase() || 'jpg';
+  const newName = req.file.filename + '.' + ext;
+  const newPath = path.join(SHARE_DIR, newName);
+  fs.renameSync(req.file.path, newPath);
+  const base = process.env.BASE_URL || `http://localhost:${PORT}`;
+  res.json({ url: `${base}/shares/${newName}`, id: newName });
+});
+
+app.get('/share', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Share Image</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0a0a0f;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:sans-serif;padding:20px}
+.box{background:#111;border:1px solid #222;border-radius:20px;padding:32px;width:100%;max-width:420px;text-align:center}
+h2{color:#fff;font-size:22px;margin-bottom:8px}
+p{color:#666;font-size:13px;margin-bottom:24px}
+.drop{border:2px dashed #333;border-radius:14px;padding:40px 20px;cursor:pointer;transition:all .2s;margin-bottom:16px}
+.drop:hover,.drop.over{border-color:#e53e3e;background:#1a0a0a}
+.drop svg{width:48px;height:48px;color:#444;margin-bottom:12px}
+.drop-text{color:#555;font-size:14px}
+input[type=file]{display:none}
+.btn{width:100%;padding:14px;background:#e53e3e;color:#fff;border:none;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;margin-top:8px}
+.btn:disabled{background:#333;cursor:not-allowed}
+.result{margin-top:20px;background:#0d1117;border:1px solid #1e3a5f;border-radius:12px;padding:16px;display:none}
+.result-label{color:#58a6ff;font-size:12px;margin-bottom:8px}
+.link-box{display:flex;gap:8px;align-items:center}
+.link{flex:1;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px;color:#58a6ff;font-size:13px;word-break:break-all}
+.copy-btn{padding:10px 14px;background:#238636;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;white-space:nowrap}
+.preview{max-width:100%;border-radius:10px;margin-top:12px}
+.status{color:#888;font-size:13px;margin-top:12px}
+</style>
+</head>
+<body>
+<div class="box">
+  <h2>📸 Image Share</h2>
+  <p>Screenshot upload করো → link পাবে</p>
+  <div class="drop" id="drop" onclick="document.getElementById('fileIn').click()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>
+    <div class="drop-text">Tap করো অথবা drag করো</div>
+  </div>
+  <input type="file" id="fileIn" accept="image/*" onchange="handleFile(this.files[0])">
+  <div class="status" id="status"></div>
+  <div class="result" id="result">
+    <div class="result-label">✅ Link ready — Claude-কে দাও</div>
+    <div class="link-box">
+      <div class="link" id="linkText"></div>
+      <button class="copy-btn" onclick="copyLink()">Copy</button>
+    </div>
+    <img class="preview" id="preview" src="" alt="preview">
+  </div>
+</div>
+<script>
+const drop = document.getElementById('drop');
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); handleFile(e.dataTransfer.files[0]); });
+
+async function handleFile(file) {
+  if (!file) return;
+  document.getElementById('status').textContent = '⏳ Uploading...';
+  const fd = new FormData();
+  fd.append('image', file);
+  try {
+    const r = await fetch('/api/share/upload', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error);
+    document.getElementById('linkText').textContent = d.url;
+    document.getElementById('preview').src = d.url;
+    document.getElementById('result').style.display = 'block';
+    document.getElementById('status').textContent = '';
+  } catch(e) {
+    document.getElementById('status').textContent = '❌ ' + e.message;
+  }
+}
+
+function copyLink() {
+  const link = document.getElementById('linkText').textContent;
+  navigator.clipboard.writeText(link).then(() => {
+    document.querySelector('.copy-btn').textContent = '✓ Copied!';
+    setTimeout(() => document.querySelector('.copy-btn').textContent = 'Copy', 2000);
+  });
+}
+</script>
+</body>
+</html>`);
+});
+
 // ========== THUMBNAIL GENERATOR ==========
 async function generateThumbnail(videoPath, title, outputPath) {
   const framePath = outputPath.replace('.jpg', '_frame.jpg');
@@ -1494,8 +1658,10 @@ app.post('/api/drive/auto-upload', async (req, res) => {
     try {
       const fetch = (await import('node-fetch')).default;
       const t = loadTokens();
-      const driveToken = t.drive_access_token || process.env.DRIVE_ACCESS_TOKEN;
-      const ytToken = t.access_token || process.env.YT_ACCESS_TOKEN;
+      let driveToken = await getValidDriveToken() || process.env.DRIVE_ACCESS_TOKEN;
+      if (!driveToken) driveToken = await refreshDriveToken();
+      let ytToken = await getValidYTToken() || process.env.YT_ACCESS_TOKEN;
+      if (!ytToken) ytToken = await refreshYouTubeToken();
 
       if (!driveToken) throw new Error('Drive সংযুক্ত নয়');
       if (!ytToken) throw new Error('YouTube সংযুক্ত নয়');
@@ -1535,7 +1701,7 @@ app.post('/api/drive/auto-upload', async (req, res) => {
       // Helper: generate AI meta
       async function generateMeta(title) {
         if (!aiService || !aiKey) return { title, description: '', hashtags: [], tags: [] };
-        const prompt = `You are an expert Islamic YouTube Shorts content creator for a Bengali audience. The audio file name is: "${rawTitle}" (this is the WAZ/MOTIVATION audio title - base your content on this). STRICT RULES: 1) Return ONLY valid JSON, zero explanation, zero markdown backticks. 2) Title: Bengali, emotional/motivational, emoji-rich (☪️🤲📿🕌✨), max 60 chars, inspired by the audio filename meaning. 3) Description: 3 lines Bengali Islamic motivation ending with relevant duas/ayat reference. 4) Hashtags: Mix HIGH volume + NICHE tags. Use these proven viral Islamic hashtags: #shorts #islamicshorts #waz #islamicvideo #quran #allah #islam #muslim #bangla #bangladesh #viral #islamicmotivation #deen #alhamdulillah #subhanallah — then add 5 more relevant to the audio topic. Total exactly 20 hashtags. 5) Tags: Include both Bengali phonetic + English SEO tags. Must include: islamic shorts, bangla waz, islamic motivation, quran, allah, muslim, bangladesh, viral islamic, waz mahfil, islamic video bangla, deen, hadith, sunnah, islamic quotes — then add topic-specific tags. Total exactly 25 tags. Return exactly: {"title":"বাংলা ইসলামিক টাইটেল ☪️","description":"লাইন ১
+        const prompt = `You are an expert Islamic YouTube Shorts content creator for a Bengali audience. The audio file name is: "${title}" (this is the WAZ/MOTIVATION audio title - base your content on this). STRICT RULES: 1) Return ONLY valid JSON, zero explanation, zero markdown backticks. 2) Title: Bengali, emotional/motivational, emoji-rich (☪️🤲📿🕌✨), max 60 chars, inspired by the audio filename meaning. 3) Description: 3 lines Bengali Islamic motivation ending with relevant duas/ayat reference. 4) Hashtags: Mix HIGH volume + NICHE tags. Use these proven viral Islamic hashtags: #shorts #islamicshorts #waz #islamicvideo #quran #allah #islam #muslim #bangla #bangladesh #viral #islamicmotivation #deen #alhamdulillah #subhanallah — then add 5 more relevant to the audio topic. Total exactly 20 hashtags. 5) Tags: Include both Bengali phonetic + English SEO tags. Must include: islamic shorts, bangla waz, islamic motivation, quran, allah, muslim, bangladesh, viral islamic, waz mahfil, islamic video bangla, deen, hadith, sunnah, islamic quotes — then add topic-specific tags. Total exactly 25 tags. Return exactly: {"title":"বাংলা ইসলামিক টাইটেল ☪️","description":"লাইন ১
 লাইন ২
 লাইন ৩","hashtags":["#shorts",...exactly 20],"tags":["islamic shorts",...exactly 25]}`;
         let aiText = '';
@@ -1963,7 +2129,7 @@ app.post('/api/drive/zip-upload', async (req, res) => {
 
           if (aiService && aiKey) {
             try {
-              const prompt = `You are an expert Islamic YouTube Shorts content creator for a Bengali audience. The audio file name is: "${rawTitle}" (this is the WAZ/MOTIVATION audio title - base your content on this). STRICT RULES: 1) Return ONLY valid JSON, zero explanation, zero markdown backticks. 2) Title: Bengali, emotional/motivational, emoji-rich (☪️🤲📿🕌✨), max 60 chars, inspired by the audio filename meaning. 3) Description: 3 lines Bengali Islamic motivation ending with relevant duas/ayat reference. 4) Hashtags: Mix HIGH volume + NICHE tags. Use these proven viral Islamic hashtags: #shorts #islamicshorts #waz #islamicvideo #quran #allah #islam #muslim #bangla #bangladesh #viral #islamicmotivation #deen #alhamdulillah #subhanallah — then add 5 more relevant to the audio topic. Total exactly 20 hashtags. 5) Tags: Include both Bengali phonetic + English SEO tags. Must include: islamic shorts, bangla waz, islamic motivation, quran, allah, muslim, bangladesh, viral islamic, waz mahfil, islamic video bangla, deen, hadith, sunnah, islamic quotes — then add topic-specific tags. Total exactly 25 tags. Return exactly: {"title":"বাংলা ইসলামিক টাইটেল ☪️","description":"লাইন ১
+              const prompt = `You are an expert Islamic YouTube Shorts content creator for a Bengali audience. The audio file name is: "${title}" (this is the WAZ/MOTIVATION audio title - base your content on this). STRICT RULES: 1) Return ONLY valid JSON, zero explanation, zero markdown backticks. 2) Title: Bengali, emotional/motivational, emoji-rich (☪️🤲📿🕌✨), max 60 chars, inspired by the audio filename meaning. 3) Description: 3 lines Bengali Islamic motivation ending with relevant duas/ayat reference. 4) Hashtags: Mix HIGH volume + NICHE tags. Use these proven viral Islamic hashtags: #shorts #islamicshorts #waz #islamicvideo #quran #allah #islam #muslim #bangla #bangladesh #viral #islamicmotivation #deen #alhamdulillah #subhanallah — then add 5 more relevant to the audio topic. Total exactly 20 hashtags. 5) Tags: Include both Bengali phonetic + English SEO tags. Must include: islamic shorts, bangla waz, islamic motivation, quran, allah, muslim, bangladesh, viral islamic, waz mahfil, islamic video bangla, deen, hadith, sunnah, islamic quotes — then add topic-specific tags. Total exactly 25 tags. Return exactly: {"title":"বাংলা ইসলামিক টাইটেল ☪️","description":"লাইন ১
 লাইন ২
 লাইন ৩","hashtags":["#shorts",...exactly 20],"tags":["islamic shorts",...exactly 25]}`;
               let aiText = '';
