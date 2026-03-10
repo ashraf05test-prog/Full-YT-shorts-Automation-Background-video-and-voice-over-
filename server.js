@@ -558,6 +558,37 @@ app.get('/auth/drive/callback', async (req, res) => {
 
 // ========== SERVER-SIDE SCHEDULER ==========
 const SCHED_FILE = path.join(__dirname, 'schedule.json');
+const USED_AUDIO_FILE = path.join(__dirname, 'used_audio.json');
+
+function loadAudioQueue() {
+  try { if (fs.existsSync(USED_AUDIO_FILE)) return JSON.parse(fs.readFileSync(USED_AUDIO_FILE, 'utf8')); } catch {}
+  return { used: [], remaining: [] };
+}
+function saveAudioQueue(data) {
+  fs.writeFileSync(USED_AUDIO_FILE, JSON.stringify(data, null, 2));
+}
+function getNextAudio(audioFiles) {
+  const q = loadAudioQueue();
+  const allNames = audioFiles.map(a => a.name);
+
+  // remaining থেকে যেগুলো এখনো Drive-এ আছে সেগুলো রাখো
+  let remaining = q.remaining.filter(n => allNames.includes(n));
+
+  // remaining খালি হলে — সব আবার যোগ করো (cycle)
+  if (remaining.length === 0) {
+    remaining = [...allNames].sort(() => Math.random() - 0.5);
+    console.log('[SCHED] Audio queue reset — starting new cycle');
+  }
+
+  // প্রথমটা নাও
+  const nextName = remaining.shift();
+  const nextAudio = audioFiles.find(a => a.name === nextName);
+
+  // Save updated queue
+  saveAudioQueue({ used: [...(q.used || []), nextName], remaining });
+
+  return nextAudio || audioFiles[0];
+}
 
 function loadSchedConfig() {
   try {
@@ -702,7 +733,7 @@ async function triggerAutoUpload(cfg) {
 
       try {
         // Pick random audio
-        const randomAudio = audioFiles[Math.floor(Math.random() * audioFiles.length)];
+        const randomAudio = getNextAudio(audioFiles);
         console.log('[SCHED] Audio:', randomAudio.name);
 
         // Download audio
@@ -880,13 +911,13 @@ async function triggerAutoUpload(cfg) {
           'islamic reminder','allah akbar','subhanallah','alhamdulillah','short islamic video'
         ];
         const fallbackTitleOptions = [
-          `☪️ ${rawTitle} | বাংলা ইসলামিক শর্টস`,
-          `🤲 ${rawTitle} | ইসলামিক মোটিভেশন`,
-          `📿 ${rawTitle} | ওয়াজ মাহফিল`,
-          `🕌 ${rawTitle} | বাংলা ওয়াজ`,
-          `✨ ${rawTitle} | ইসলামিক ভিডিও`,
+          rawTitle,
+          `${rawTitle} | কলিজা কাপানো কথা`,
+          `${rawTitle} | জীবন বদলানো উক্তি`,
+          `${rawTitle} | একবার শুনুন`,
+          `${rawTitle} | মনে রাখার মতো কথা`,
         ];
-        const fallbackDesc = `আল্লাহর পথে থাকুন, সঠিক পথ বেছে নিন।\nইসলামের আলোয় জীবন সাজান।\nআল্লাহু আকবার ☪️ | সূরা ও হাদিসের আলোকে।`;
+        const fallbackDesc = `আল্লাহর পথে থাকুন, সঠিক পথ বেছে নিন।\nইসলামের আলোয় জীবন সাজান।\nসূরা ও হাদিসের আলোকে।`;
 
         let meta = {
           title: fallbackTitleOptions[Math.floor(Math.random() * fallbackTitleOptions.length)].substring(0, 100),
@@ -897,7 +928,7 @@ async function triggerAutoUpload(cfg) {
 
         if (cfg.aiService && cfg.aiKey) {
           try {
-            const prompt = `You are an expert Islamic YouTube Shorts content creator for a Bengali audience. The audio file name is: "${title}" (this is the WAZ/MOTIVATION audio title - base your content on this). STRICT RULES: 1) Return ONLY valid JSON, zero explanation, zero markdown backticks. 2) Title: Bengali, emotional/motivational, emoji-rich (☪️🤲📿🕌✨), max 60 chars, inspired by the audio filename meaning. 3) Description: 3 lines Bengali Islamic motivation ending with relevant duas/ayat reference. 4) Hashtags: Mix HIGH volume + NICHE tags. Use these proven viral Islamic hashtags: #shorts #islamicshorts #waz #islamicvideo #quran #allah #islam #muslim #bangla #bangladesh #viral #islamicmotivation #deen #alhamdulillah #subhanallah — then add 5 more relevant to the audio topic. Total exactly 20 hashtags. 5) Tags: Include both Bengali phonetic + English SEO tags. Must include: islamic shorts, bangla waz, islamic motivation, quran, allah, muslim, bangladesh, viral islamic, waz mahfil, islamic video bangla, deen, hadith, sunnah, islamic quotes — then add topic-specific tags. Total exactly 25 tags. Return exactly: {"title":"বাংলা ইসলামিক টাইটেল ☪️","description":"লাইন ১\nলাইন ২\nলাইন ৩","hashtags":["#shorts",...exactly 20],"tags":["islamic shorts",...exactly 25]}`;
+            const prompt = `You are an expert Islamic YouTube Shorts content creator for a Bengali audience. The audio file name is: "${title}" (this is the WAZ/MOTIVATION audio title - base your content on this). STRICT RULES: 1) Return ONLY valid JSON, zero explanation, zero markdown backticks. 2) Title: Bengali, emotional/motivational, NO emoji, max 60 chars. If the audio filename has a clear meaningful title use it directly, otherwise write a natural emotional title like "কলিজা কাপানো কথা" or "জীবন বদলানো উক্তি". 3) Description: 3 lines Bengali Islamic motivation ending with relevant duas/ayat reference. 4) Hashtags: Mix HIGH volume + NICHE tags. Use these proven viral Islamic hashtags: #shorts #islamicshorts #waz #islamicvideo #quran #allah #islam #muslim #bangla #bangladesh #viral #islamicmotivation #deen #alhamdulillah #subhanallah — then add 5 more relevant to the audio topic. Total exactly 20 hashtags. 5) Tags: Include both Bengali phonetic + English SEO tags. Must include: islamic shorts, bangla waz, islamic motivation, quran, allah, muslim, bangladesh, viral islamic, waz mahfil, islamic video bangla, deen, hadith, sunnah, islamic quotes — then add topic-specific tags. Total exactly 25 tags. Return exactly: {"title":"কলিজা কাপানো কথা","description":"লাইন ১\nলাইন ২\nলাইন ৩","hashtags":["#shorts",...exactly 20],"tags":["islamic shorts",...exactly 25]}`;
             let aiText = '';
             if (cfg.aiService === 'gemini') {
               const ar = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${cfg.aiKey}`, {
@@ -1716,7 +1747,7 @@ app.post('/api/drive/auto-upload', async (req, res) => {
       // Helper: generate AI meta
       async function generateMeta(title) {
         if (!aiService || !aiKey) return { title, description: '', hashtags: [], tags: [] };
-        const prompt = `You are an expert Islamic YouTube Shorts content creator for a Bengali audience. The audio file name is: "${title}" (this is the WAZ/MOTIVATION audio title - base your content on this). STRICT RULES: 1) Return ONLY valid JSON, zero explanation, zero markdown backticks. 2) Title: Bengali, emotional/motivational, emoji-rich (☪️🤲📿🕌✨), max 60 chars, inspired by the audio filename meaning. 3) Description: 3 lines Bengali Islamic motivation ending with relevant duas/ayat reference. 4) Hashtags: Mix HIGH volume + NICHE tags. Use these proven viral Islamic hashtags: #shorts #islamicshorts #waz #islamicvideo #quran #allah #islam #muslim #bangla #bangladesh #viral #islamicmotivation #deen #alhamdulillah #subhanallah — then add 5 more relevant to the audio topic. Total exactly 20 hashtags. 5) Tags: Include both Bengali phonetic + English SEO tags. Must include: islamic shorts, bangla waz, islamic motivation, quran, allah, muslim, bangladesh, viral islamic, waz mahfil, islamic video bangla, deen, hadith, sunnah, islamic quotes — then add topic-specific tags. Total exactly 25 tags. Return exactly: {"title":"বাংলা ইসলামিক টাইটেল ☪️","description":"লাইন ১
+        const prompt = `You are an expert Islamic YouTube Shorts content creator for a Bengali audience. The audio file name is: "${title}" (this is the WAZ/MOTIVATION audio title - base your content on this). STRICT RULES: 1) Return ONLY valid JSON, zero explanation, zero markdown backticks. 2) Title: Bengali, emotional/motivational, NO emoji, max 60 chars. If the audio filename has a clear meaningful title use it directly, otherwise write a natural emotional title like "কলিজা কাপানো কথা" or "জীবন বদলানো উক্তি". 3) Description: 3 lines Bengali Islamic motivation ending with relevant duas/ayat reference. 4) Hashtags: Mix HIGH volume + NICHE tags. Use these proven viral Islamic hashtags: #shorts #islamicshorts #waz #islamicvideo #quran #allah #islam #muslim #bangla #bangladesh #viral #islamicmotivation #deen #alhamdulillah #subhanallah — then add 5 more relevant to the audio topic. Total exactly 20 hashtags. 5) Tags: Include both Bengali phonetic + English SEO tags. Must include: islamic shorts, bangla waz, islamic motivation, quran, allah, muslim, bangladesh, viral islamic, waz mahfil, islamic video bangla, deen, hadith, sunnah, islamic quotes — then add topic-specific tags. Total exactly 25 tags. Return exactly: {"title":"কলিজা কাপানো কথা","description":"লাইন ১
 লাইন ২
 লাইন ৩","hashtags":["#shorts",...exactly 20],"tags":["islamic shorts",...exactly 25]}`;
         let aiText = '';
@@ -1780,7 +1811,7 @@ app.post('/api/drive/auto-upload', async (req, res) => {
 
           // 4. Pick random audio and merge
           if (audioFiles.length > 0) {
-            const randomAudio = audioFiles[Math.floor(Math.random() * audioFiles.length)];
+            const randomAudio = getNextAudio(audioFiles);
             console.log('[AUTO] Using audio:', randomAudio.name);
             const audioPath = await downloadFromDrive(randomAudio.id, randomAudio.name);
             tempFiles.push(audioPath);
@@ -2121,7 +2152,7 @@ app.post('/api/drive/zip-upload', async (req, res) => {
 
           // Merge random audio if available
           if (audioFiles.length > 0) {
-            const randomAudio = audioFiles[Math.floor(Math.random() * audioFiles.length)];
+            const randomAudio = getNextAudio(audioFiles);
             
             // Download audio from Drive
             const audioDlRes = await fetch(`https://www.googleapis.com/drive/v3/files/${randomAudio.id}?alt=media`, {
@@ -2144,7 +2175,7 @@ app.post('/api/drive/zip-upload', async (req, res) => {
 
           if (aiService && aiKey) {
             try {
-              const prompt = `You are an expert Islamic YouTube Shorts content creator for a Bengali audience. The audio file name is: "${title}" (this is the WAZ/MOTIVATION audio title - base your content on this). STRICT RULES: 1) Return ONLY valid JSON, zero explanation, zero markdown backticks. 2) Title: Bengali, emotional/motivational, emoji-rich (☪️🤲📿🕌✨), max 60 chars, inspired by the audio filename meaning. 3) Description: 3 lines Bengali Islamic motivation ending with relevant duas/ayat reference. 4) Hashtags: Mix HIGH volume + NICHE tags. Use these proven viral Islamic hashtags: #shorts #islamicshorts #waz #islamicvideo #quran #allah #islam #muslim #bangla #bangladesh #viral #islamicmotivation #deen #alhamdulillah #subhanallah — then add 5 more relevant to the audio topic. Total exactly 20 hashtags. 5) Tags: Include both Bengali phonetic + English SEO tags. Must include: islamic shorts, bangla waz, islamic motivation, quran, allah, muslim, bangladesh, viral islamic, waz mahfil, islamic video bangla, deen, hadith, sunnah, islamic quotes — then add topic-specific tags. Total exactly 25 tags. Return exactly: {"title":"বাংলা ইসলামিক টাইটেল ☪️","description":"লাইন ১
+              const prompt = `You are an expert Islamic YouTube Shorts content creator for a Bengali audience. The audio file name is: "${title}" (this is the WAZ/MOTIVATION audio title - base your content on this). STRICT RULES: 1) Return ONLY valid JSON, zero explanation, zero markdown backticks. 2) Title: Bengali, emotional/motivational, NO emoji, max 60 chars. If the audio filename has a clear meaningful title use it directly, otherwise write a natural emotional title like "কলিজা কাপানো কথা" or "জীবন বদলানো উক্তি". 3) Description: 3 lines Bengali Islamic motivation ending with relevant duas/ayat reference. 4) Hashtags: Mix HIGH volume + NICHE tags. Use these proven viral Islamic hashtags: #shorts #islamicshorts #waz #islamicvideo #quran #allah #islam #muslim #bangla #bangladesh #viral #islamicmotivation #deen #alhamdulillah #subhanallah — then add 5 more relevant to the audio topic. Total exactly 20 hashtags. 5) Tags: Include both Bengali phonetic + English SEO tags. Must include: islamic shorts, bangla waz, islamic motivation, quran, allah, muslim, bangladesh, viral islamic, waz mahfil, islamic video bangla, deen, hadith, sunnah, islamic quotes — then add topic-specific tags. Total exactly 25 tags. Return exactly: {"title":"কলিজা কাপানো কথা","description":"লাইন ১
 লাইন ২
 লাইন ৩","hashtags":["#shorts",...exactly 20],"tags":["islamic shorts",...exactly 25]}`;
               let aiText = '';
