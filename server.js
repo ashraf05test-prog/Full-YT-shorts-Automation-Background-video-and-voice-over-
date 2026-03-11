@@ -426,6 +426,7 @@ async function backupTokensToDrive(tokens) {
 
 async function refreshYouTubeToken() {
   try {
+    const fetch = (await import('node-fetch')).default;
     const t = loadTokens();
     if (!t.refresh_token) return null;
     const r = await fetch('https://oauth2.googleapis.com/token', {
@@ -596,21 +597,83 @@ function getNextAudio(audioFiles) {
   return nextAudio || audioFiles[0];
 }
 
+const SCHED_DEFAULT = { enabled: false, slots: [], days: [0,1,2,3,4,5,6], folderId: '', audioFolderId: '', maxVideos: 3, privacy: 'private', deleteAfterUpload: false, aiService: null, aiKey: null };
+const SCHED_DRIVE_NAME = 'yta_schedule_config.json';
+let schedDriveFileId = null;
+
 function loadSchedConfig() {
+  // In-memory cache (set after Drive load)
+  if (process.env.SCHED_CONFIG) {
+    try { return { ...SCHED_DEFAULT, ...JSON.parse(process.env.SCHED_CONFIG) }; } catch {}
+  }
+  // File fallback
   try {
-    if (fs.existsSync(SCHED_FILE)) return JSON.parse(fs.readFileSync(SCHED_FILE, 'utf8'));
+    if (fs.existsSync(SCHED_FILE)) return { ...SCHED_DEFAULT, ...JSON.parse(fs.readFileSync(SCHED_FILE, 'utf8')) };
   } catch {}
-  return { enabled: false, slots: [], days: [0,1,2,3,4,5,6], folderId: '', audioFolderId: '', maxVideos: 3, privacy: 'private', deleteAfterUpload: false, aiService: null, aiKey: null };
+  return { ...SCHED_DEFAULT };
 }
 
-function saveSchedConfig(cfg) {
-  fs.writeFileSync(SCHED_FILE, JSON.stringify(cfg, null, 2));
+async function loadSchedFromDrive() {
+  try {
+    const fetch = (await import('node-fetch')).default;
+    const driveToken = await getValidDriveToken();
+    if (!driveToken) return;
+    const search = await fetch(
+      `https://www.googleapis.com/drive/v3/files?q=name='${SCHED_DRIVE_NAME}' and trashed=false&fields=files(id,name)`,
+      { headers: { 'Authorization': `Bearer ${driveToken}` } }
+    );
+    const sd = await search.json();
+    if (sd.files && sd.files.length > 0) {
+      schedDriveFileId = sd.files[0].id;
+      const dl = await fetch(`https://www.googleapis.com/drive/v3/files/${schedDriveFileId}?alt=media`, {
+        headers: { 'Authorization': `Bearer ${driveToken}` }
+      });
+      const cfg = await dl.json();
+      process.env.SCHED_CONFIG = JSON.stringify(cfg);
+      try { fs.writeFileSync(SCHED_FILE, JSON.stringify(cfg, null, 2)); } catch {}
+      console.log('[SCHED] Config loaded from Drive ✓');
+      if (cfg.enabled) startServerScheduler();
+    }
+  } catch(e) { console.warn('[SCHED] Drive load failed:', e.message); }
+}
+
+async function saveSchedConfig(cfg) {
+  // 1) Memory cache
+  process.env.SCHED_CONFIG = JSON.stringify(cfg);
+  // 2) File cache
+  try { fs.writeFileSync(SCHED_FILE, JSON.stringify(cfg, null, 2)); } catch {}
+  // 3) Drive backup
+  try {
+    const fetch = (await import('node-fetch')).default;
+    const driveToken = await getValidDriveToken();
+    if (!driveToken) return;
+    const content = JSON.stringify(cfg, null, 2);
+    if (schedDriveFileId) {
+      await fetch(`https://www.googleapis.com/upload/drive/v3/files/${schedDriveFileId}?uploadType=media`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
+        body: content
+      });
+      console.log('[SCHED] Config updated in Drive ✓');
+    } else {
+      const boundary = 'schedboundary';
+      const meta = JSON.stringify({ name: SCHED_DRIVE_NAME, mimeType: 'application/json' });
+      const body = `--${boundary}\r\nContent-Type: application/json\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
+      const r = await fetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${driveToken}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
+        body
+      });
+      const d = await r.json();
+      if (d.id) { schedDriveFileId = d.id; console.log('[SCHED] Config saved to Drive ✓', d.id); }
+    }
+  } catch(e) { console.warn('[SCHED] Drive save failed:', e.message); }
 }
 
 // Save schedule config from frontend
-app.post('/api/schedule/save', (req, res) => {
+app.post('/api/schedule/save', async (req, res) => {
   const cfg = { ...loadSchedConfig(), ...req.body };
-  saveSchedConfig(cfg);
+  await saveSchedConfig(cfg);
   if (cfg.enabled) startServerScheduler();
   else stopServerScheduler();
   res.json({ success: true, config: cfg });
@@ -934,7 +997,7 @@ async function triggerAutoUpload(cfg) {
 
         if (cfg.aiService && cfg.aiKey) {
           try {
-            const prompt = `You are an expert Islamic YouTube Shorts content creator for a Bengali audience. The audio file name is: "${title}" (this is the WAZ/MOTIVATION audio title - base your content on this). STRICT RULES: 1) Return ONLY valid JSON, zero explanation, zero markdown backticks. 2) Title: Bengali, emotional/motivational, NO emoji, max 60 chars. If the audio filename has a clear meaningful title use it directly, otherwise write a natural emotional title like "কলিজা কাপানো কথা" or "জীবন বদলানো উক্তি". 3) Description: 3 lines Bengali Islamic motivation ending with relevant duas/ayat reference. 4) Hashtags: Mix HIGH volume + NICHE tags. Use these proven viral Islamic hashtags: #shorts #islamicshorts #waz #islamicvideo #quran #allah #islam #muslim #bangla #bangladesh #viral #islamicmotivation #deen #alhamdulillah #subhanallah — then add 5 more relevant to the audio topic. Total exactly 20 hashtags. 5) Tags: Include both Bengali phonetic + English SEO tags. Must include: islamic shorts, bangla waz, islamic motivation, quran, allah, muslim, bangladesh, viral islamic, waz mahfil, islamic video bangla, deen, hadith, sunnah, islamic quotes — then add topic-specific tags. Total exactly 25 tags. Return exactly: {"title":"কলিজা কাপানো কথা","description":"লাইন ১\nলাইন ২\nলাইন ৩","hashtags":["#shorts",...exactly 20],"tags":["islamic shorts",...exactly 25]}`;
+            const prompt = `You are an expert Islamic YouTube Shorts content creator for a Bengali audience. The audio file name is: "${rawTitle}" (this is the WAZ/MOTIVATION audio title - base your content on this). STRICT RULES: 1) Return ONLY valid JSON, zero explanation, zero markdown backticks. 2) Title: Bengali, emotional/motivational, NO emoji, max 60 chars. If the audio filename has a clear meaningful title use it directly, otherwise write a natural emotional title like "কলিজা কাপানো কথা" or "জীবন বদলানো উক্তি". 3) Description: 3 lines Bengali Islamic motivation ending with relevant duas/ayat reference. 4) Hashtags: Mix HIGH volume + NICHE tags. Use these proven viral Islamic hashtags: #shorts #islamicshorts #waz #islamicvideo #quran #allah #islam #muslim #bangla #bangladesh #viral #islamicmotivation #deen #alhamdulillah #subhanallah — then add 5 more relevant to the audio topic. Total exactly 20 hashtags. 5) Tags: Include both Bengali phonetic + English SEO tags. Must include: islamic shorts, bangla waz, islamic motivation, quran, allah, muslim, bangladesh, viral islamic, waz mahfil, islamic video bangla, deen, hadith, sunnah, islamic quotes — then add topic-specific tags. Total exactly 25 tags. Return exactly: {"title":"কলিজা কাপানো কথা","description":"লাইন ১\nলাইন ২\nলাইন ৩","hashtags":["#shorts",...exactly 20],"tags":["islamic shorts",...exactly 25]}`;
             let aiText = '';
             if (cfg.aiService === 'gemini') {
               const ar = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${cfg.aiKey}`, {
@@ -1093,7 +1156,7 @@ app.post('/api/channel/shorts', async (req, res) => {
       // Fallback: /shorts endpoint try করো
       try {
         const cmd2 = `yt-dlp --flat-playlist --playlist-end ${Math.min(parseInt(maxLinks) || 50, 200)} --print "%(url)s|%(title)s|%(duration)s" "${channelArg}/shorts" 2>/dev/null`;
-        const out2 = execSync(cmd2, { timeout: 60000, maxBuffer: 10 * 1024 * 1024 }).toString();
+        const out2 = require('child_process').execSync(cmd2, { timeout: 60000, maxBuffer: 10 * 1024 * 1024 }).toString();
         out2.split('\n').filter(Boolean).forEach(line => {
           const parts = line.split('|');
           const url = parts[0]?.trim();
@@ -1515,12 +1578,15 @@ app.listen(PORT, () => {
   try { require('child_process').execSync('yt-dlp --version'); console.log('✓ yt-dlp available'); } catch { console.warn('✗ yt-dlp not found'); }
   try { require('child_process').execSync('ffmpeg -version 2>&1 | head -1'); console.log('✓ ffmpeg available'); } catch { console.warn('✗ ffmpeg not found'); }
 
-  // Auto-start scheduler if was enabled
-  const cfg = loadSchedConfig();
-  if (cfg.enabled) {
-    console.log('[SCHED] Auto-starting scheduler from saved config...');
-    startServerScheduler();
-  }
+  // Load schedule from Drive (async, starts scheduler if enabled)
+  setTimeout(() => {
+    loadSchedFromDrive().catch(e => {
+      console.warn('[SCHED] Drive load skipped:', e.message);
+      // Fallback: try local file
+      const cfg = loadSchedConfig();
+      if (cfg.enabled) { console.log('[SCHED] Auto-starting from local config...'); startServerScheduler(); }
+    });
+  }, 3000); // 3s delay to let tokens refresh first
 });
 
 // ========== DRIVE AUTO UPLOAD SYSTEM ==========
@@ -2104,9 +2170,10 @@ app.post('/api/drive/zip-upload', async (req, res) => {
     const tempFiles = [];
     try {
       const fetch = (await import('node-fetch')).default;
-      const t = loadTokens();
-      const driveToken = t.drive_access_token;
-      const ytToken = t.access_token;
+      let driveToken = await getValidDriveToken();
+      if (!driveToken) driveToken = await refreshDriveToken();
+      let ytToken = await getValidYTToken();
+      if (!ytToken) ytToken = await refreshYouTubeToken();
       if (!driveToken) throw new Error('Drive সংযুক্ত নয়');
       if (!ytToken) throw new Error('YouTube সংযুক্ত নয়');
 
@@ -2185,7 +2252,7 @@ app.post('/api/drive/zip-upload', async (req, res) => {
 
           if (aiService && aiKey) {
             try {
-              const prompt = `You are an expert Islamic YouTube Shorts content creator for a Bengali audience. The audio file name is: "${title}" (this is the WAZ/MOTIVATION audio title - base your content on this). STRICT RULES: 1) Return ONLY valid JSON, zero explanation, zero markdown backticks. 2) Title: Bengali, emotional/motivational, NO emoji, max 60 chars. If the audio filename has a clear meaningful title use it directly, otherwise write a natural emotional title like "কলিজা কাপানো কথা" or "জীবন বদলানো উক্তি". 3) Description: 3 lines Bengali Islamic motivation ending with relevant duas/ayat reference. 4) Hashtags: Mix HIGH volume + NICHE tags. Use these proven viral Islamic hashtags: #shorts #islamicshorts #waz #islamicvideo #quran #allah #islam #muslim #bangla #bangladesh #viral #islamicmotivation #deen #alhamdulillah #subhanallah — then add 5 more relevant to the audio topic. Total exactly 20 hashtags. 5) Tags: Include both Bengali phonetic + English SEO tags. Must include: islamic shorts, bangla waz, islamic motivation, quran, allah, muslim, bangladesh, viral islamic, waz mahfil, islamic video bangla, deen, hadith, sunnah, islamic quotes — then add topic-specific tags. Total exactly 25 tags. Return exactly: {"title":"কলিজা কাপানো কথা","description":"লাইন ১
+              const prompt = `You are an expert Islamic YouTube Shorts content creator for a Bengali audience. The audio file name is: "${rawTitle}" (this is the WAZ/MOTIVATION audio title - base your content on this). STRICT RULES: 1) Return ONLY valid JSON, zero explanation, zero markdown backticks. 2) Title: Bengali, emotional/motivational, NO emoji, max 60 chars. If the audio filename has a clear meaningful title use it directly, otherwise write a natural emotional title like "কলিজা কাপানো কথা" or "জীবন বদলানো উক্তি". 3) Description: 3 lines Bengali Islamic motivation ending with relevant duas/ayat reference. 4) Hashtags: Mix HIGH volume + NICHE tags. Use these proven viral Islamic hashtags: #shorts #islamicshorts #waz #islamicvideo #quran #allah #islam #muslim #bangla #bangladesh #viral #islamicmotivation #deen #alhamdulillah #subhanallah — then add 5 more relevant to the audio topic. Total exactly 20 hashtags. 5) Tags: Include both Bengali phonetic + English SEO tags. Must include: islamic shorts, bangla waz, islamic motivation, quran, allah, muslim, bangladesh, viral islamic, waz mahfil, islamic video bangla, deen, hadith, sunnah, islamic quotes — then add topic-specific tags. Total exactly 25 tags. Return exactly: {"title":"কলিজা কাপানো কথা","description":"লাইন ১
 লাইন ২
 লাইন ৩","hashtags":["#shorts",...exactly 20],"tags":["islamic shorts",...exactly 25]}`;
               let aiText = '';
@@ -2276,3 +2343,287 @@ app.post('/api/drive/zip-upload', async (req, res) => {
     }
   })();
 });
+
+// ========== TROLL EDIT SYSTEM ==========
+const TROLL_CONFIG_FILE = path.join(__dirname, 'troll_config.json');
+const TROLL_QUEUE_FILE = path.join(__dirname, 'troll_queue.json');
+const trollUpload = multer({ dest: TEMP_DIR });
+
+function loadTrollConfig() {
+  try { if (fs.existsSync(TROLL_CONFIG_FILE)) return JSON.parse(fs.readFileSync(TROLL_CONFIG_FILE, 'utf8')); } catch {}
+  return { phonkList: [], skullPath: null, textOverlay: '', textTime: 1, freezeSec: 3, scheduleDays: [], scheduleTime: '08:00', ytChannelId: '', driveFolderId: '', driveAudioFolderId: '', enabled: false };
+}
+function saveTrollConfig(cfg) {
+  fs.writeFileSync(TROLL_CONFIG_FILE, JSON.stringify(cfg, null, 2));
+}
+
+function loadTrollQueue() {
+  try { if (fs.existsSync(TROLL_QUEUE_FILE)) return JSON.parse(fs.readFileSync(TROLL_QUEUE_FILE, 'utf8')); } catch {}
+  return { used: [], remaining: [] };
+}
+function saveTrollQueue(q) {
+  fs.writeFileSync(TROLL_QUEUE_FILE, JSON.stringify(q, null, 2));
+}
+
+// Save troll config
+app.post('/api/troll/config/save', (req, res) => {
+  const cfg = { ...loadTrollConfig(), ...req.body };
+  saveTrollConfig(cfg);
+  res.json({ ok: true });
+});
+
+// Get troll config
+app.get('/api/troll/config', (req, res) => {
+  res.json(loadTrollConfig());
+});
+
+// Upload skull PNG
+app.post('/api/troll/skull/upload', trollUpload.single('skull'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const dest = path.join(__dirname, 'troll_skull.png');
+  fs.copyFileSync(req.file.path, dest);
+  fs.unlinkSync(req.file.path);
+  const cfg = loadTrollConfig();
+  cfg.skullPath = dest;
+  saveTrollConfig(cfg);
+  res.json({ ok: true, path: dest });
+});
+
+// Add phonk audio (from YT link → Drive)
+app.post('/api/troll/phonk/add', async (req, res) => {
+  const { url, dropTime, name } = req.body;
+  if (!url || dropTime === undefined) return res.status(400).json({ error: 'url and dropTime required' });
+  const cfg = loadTrollConfig();
+  cfg.phonkList = cfg.phonkList || [];
+  cfg.phonkList.push({ url, name: name || url, dropTime: parseFloat(dropTime), addedAt: Date.now() });
+  saveTrollConfig(cfg);
+  res.json({ ok: true, phonkList: cfg.phonkList });
+});
+
+// Remove phonk
+app.post('/api/troll/phonk/remove', (req, res) => {
+  const { index } = req.body;
+  const cfg = loadTrollConfig();
+  cfg.phonkList.splice(index, 1);
+  saveTrollConfig(cfg);
+  res.json({ ok: true, phonkList: cfg.phonkList });
+});
+
+// List Drive videos for troll
+app.get('/api/troll/drive/videos', async (req, res) => {
+  try {
+    const fetch = (await import('node-fetch')).default;
+    const driveToken = await getValidDriveToken();
+    if (!driveToken) return res.status(401).json({ error: 'Drive সংযুক্ত নয়' });
+    const cfg = loadTrollConfig();
+    const folderId = cfg.driveFolderId;
+    if (!folderId) return res.json({ files: [] });
+    const url = `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+mimeType+contains+'video/'&fields=files(id,name,size)&pageSize=100`;
+    const r = await fetch(url, { headers: { 'Authorization': `Bearer ${driveToken}` } });
+    const d = await r.json();
+    res.json({ files: d.files || [] });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// List Drive phonk audios
+app.get('/api/troll/drive/audios', async (req, res) => {
+  try {
+    const fetch = (await import('node-fetch')).default;
+    const driveToken = await getValidDriveToken();
+    if (!driveToken) return res.status(401).json({ error: 'Drive সংযুক্ত নয়' });
+    const cfg = loadTrollConfig();
+    const folderId = cfg.driveAudioFolderId;
+    if (!folderId) return res.json({ files: [] });
+    const url = `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+mimeType+contains+'audio/'&fields=files(id,name,size)&pageSize=100`;
+    const r = await fetch(url, { headers: { 'Authorization': `Bearer ${driveToken}` } });
+    const d = await r.json();
+    res.json({ files: d.files || [] });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Core troll edit function
+async function processTrollEdit(videoFileId, jobId) {
+  const fetch = (await import('node-fetch')).default;
+  const cfg = loadTrollConfig();
+
+  // BUG FIX 5: always init log array before any throw
+  jobs[jobId] = { status: 'running', log: ['[TROLL] শুরু হচ্ছে...'] };
+  const log = (msg) => {
+    console.log(msg);
+    jobs[jobId].log = [...(jobs[jobId].log || []), msg];
+  };
+
+  const driveToken = await getValidDriveToken();
+  const ytToken = await getValidYTToken();
+
+  if (!driveToken) { jobs[jobId] = { status: 'error', error: 'Drive সংযুক্ত নয়', log: jobs[jobId].log }; return; }
+  if (!ytToken) { jobs[jobId] = { status: 'error', error: 'YouTube সংযুক্ত নয়', log: jobs[jobId].log }; return; }
+  if (!cfg.phonkList || cfg.phonkList.length === 0) { jobs[jobId] = { status: 'error', error: 'Phonk audio নেই', log: jobs[jobId].log }; return; }
+  if (!cfg.skullPath || !fs.existsSync(cfg.skullPath)) { jobs[jobId] = { status: 'error', error: 'Skull PNG নেই', log: jobs[jobId].log }; return; }
+
+  const tempFiles = [];
+  try {
+    // Pick phonk — FIFO from config list
+    const q = loadTrollQueue();
+    // BUG FIX 4: filter only valid phonk names that exist in cfg
+    let remaining = (q.remaining || []).filter(n => cfg.phonkList.find(p => p.name === n));
+    if (remaining.length === 0) {
+      remaining = cfg.phonkList.map(p => p.name);
+      log('[TROLL] Phonk queue reset');
+    }
+    const phonkName = remaining.shift();
+    saveTrollQueue({ used: [...(q.used || []), phonkName], remaining });
+    // BUG FIX 4: safe fallback if phonkInfo missing
+    const phonkInfo = cfg.phonkList.find(p => p.name === phonkName) || cfg.phonkList[0];
+    const dropTime = parseFloat(phonkInfo.dropTime) || 0;
+    log(`[TROLL] Phonk: ${phonkName} | Drop: ${dropTime}s`);
+
+    // Download video from Drive
+    const videoPath = path.join(TEMP_DIR, `troll_vid_${jobId}.mp4`);
+    tempFiles.push(videoPath);
+    log('[TROLL] Video নামানো হচ্ছে...');
+    const vidRes = await fetch(`https://www.googleapis.com/drive/v3/files/${videoFileId}?alt=media`, {
+      headers: { 'Authorization': `Bearer ${driveToken}` }
+    });
+    if (!vidRes.ok) throw new Error('Video download failed: ' + await vidRes.text());
+    const vidBuf = Buffer.from(await vidRes.arrayBuffer());
+    fs.writeFileSync(videoPath, vidBuf);
+    log(`[TROLL] Video নামানো হয়েছে (${(vidBuf.length/1024/1024).toFixed(1)}MB)`);
+
+    // BUG FIX 2 & 7: Drive audio search — use proper query encoding (no encodeURIComponent)
+    const phonkDriveFile = await (async () => {
+      const safeName = phonkName.replace(/'/g, "\\'");
+      const qStr = `'${cfg.driveAudioFolderId}' in parents and name='${safeName}' and trashed=false`;
+      const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(qStr)}&fields=files(id,name)&pageSize=10`;
+      const r = await fetch(url, { headers: { 'Authorization': `Bearer ${driveToken}` } });
+      const d = await r.json();
+      return d.files && d.files[0] ? d.files[0] : null;
+    })();
+    if (!phonkDriveFile) throw new Error('Phonk audio Drive-এ পাওয়া যায়নি: ' + phonkName);
+
+    const phonkPath = path.join(TEMP_DIR, `troll_phonk_${jobId}.mp3`);
+    tempFiles.push(phonkPath);
+    log('[TROLL] Phonk নামানো হচ্ছে...');
+    const phonkRes = await fetch(`https://www.googleapis.com/drive/v3/files/${phonkDriveFile.id}?alt=media`, {
+      headers: { 'Authorization': `Bearer ${driveToken}` }
+    });
+    const phonkBuf = Buffer.from(await phonkRes.arrayBuffer());
+    fs.writeFileSync(phonkPath, phonkBuf);
+    log(`[TROLL] Phonk নামানো হয়েছে (${(phonkBuf.length/1024/1024).toFixed(1)}MB)`);
+
+    // Get video duration
+    const { stdout: durOut } = await execAsync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`);
+    const duration = parseFloat(durOut.trim());
+    const freezeSec = Math.min(parseFloat(cfg.freezeSec) || 3, duration * 0.8); // max 80% of video
+    const freezeStart = Math.max(0.1, duration - freezeSec); // BUG FIX 3: never 0
+    log(`[TROLL] Duration: ${duration}s | Freeze from: ${freezeStart}s`);
+
+    const outPath = path.join(TEMP_DIR, `troll_out_${jobId}.mp4`);
+    tempFiles.push(outPath);
+    const skullPath = cfg.skullPath;
+    const textOverlay = (cfg.textOverlay || '').replace(/'/g, '').replace(/:/g, '\\:'); // escape ffmpeg special chars
+    const textTime = parseFloat(cfg.textTime) || 2;
+
+    // BUG FIX 1: build filterComplex as single line — no newlines in shell command
+    let fc;
+    if (textOverlay) {
+      fc = `[0:v]trim=end=${freezeStart},setpts=PTS-STARTPTS[before];[0:v]trim=start=${freezeStart},setpts=PTS-STARTPTS,select='eq(n\\,0)',loop=loop=-1:size=1,trim=duration=${freezeSec}[frozen];[frozen]eq=brightness=-0.25:saturation=0.2:contrast=1.5[dark];[1:v]scale=280:280[skull];[dark][skull]overlay=(W-w)/2:(H-h)/2[withskull];[withskull]drawtext=text='${textOverlay}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=h*0.15:enable='between(t,0,${textTime})':box=1:boxcolor=black@0.5:boxborderw=8[withtext];[before][withtext]concat=n=2:v=1:a=0[outv];[2:a]atrim=start=${dropTime},asetpts=PTS-STARTPTS,volume=1.5[phonk_cut];[phonk_cut]atrim=end=${duration},asetpts=PTS-STARTPTS[outa]`;
+    } else {
+      fc = `[0:v]trim=end=${freezeStart},setpts=PTS-STARTPTS[before];[0:v]trim=start=${freezeStart},setpts=PTS-STARTPTS,select='eq(n\\,0)',loop=loop=-1:size=1,trim=duration=${freezeSec}[frozen];[frozen]eq=brightness=-0.25:saturation=0.2:contrast=1.5[dark];[1:v]scale=280:280[skull];[dark][skull]overlay=(W-w)/2:(H-h)/2[withskull];[before][withskull]concat=n=2:v=1:a=0[outv];[2:a]atrim=start=${dropTime},asetpts=PTS-STARTPTS,volume=1.5[phonk_cut];[phonk_cut]atrim=end=${duration},asetpts=PTS-STARTPTS[outa]`;
+    }
+
+    log('[TROLL] ffmpeg চলছে...');
+    await execAsync(`ffmpeg -y -i "${videoPath}" -i "${skullPath}" -i "${phonkPath}" -filter_complex "${fc}" -map "[outv]" -map "[outa]" -c:v libx264 -preset ultrafast -crf 23 -c:a aac -shortest "${outPath}"`);
+    log('[TROLL] Video তৈরি হয়েছে');
+
+    // Title from phonk name
+    const title = phonkName.replace(/\.[^.]+$/, '').substring(0, 100);
+    log('[TROLL] YouTube-এ আপলোড হচ্ছে...');
+
+    // BUG FIX 6: proper multipart build with correct byte boundaries
+    const videoBuffer = fs.readFileSync(outPath);
+    const metaBody = JSON.stringify({
+      snippet: { title, description: 'Wait for the end...\n\n#shorts #viral #phonk #trolledit #skulledit #waitfortheend', tags: ['shorts', 'viral', 'phonk', 'troll edit', 'skull edit', 'satisfying', 'wait for end'], categoryId: '22' },
+      status: { privacyStatus: 'public' }
+    });
+    const boundary = `troll${jobId}`;
+    const part1 = Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metaBody}\r\n--${boundary}\r\nContent-Type: video/mp4\r\n\r\n`);
+    const part2 = Buffer.from(`\r\n--${boundary}--`);
+    const fullBody = Buffer.concat([part1, videoBuffer, part2]);
+
+    const upRes = await fetch(`https://www.googleapis.com/upload/youtube/v3/videos?uploadType=multipart&part=snippet,status`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${ytToken}`, 'Content-Type': `multipart/related; boundary=${boundary}`, 'Content-Length': String(fullBody.length) },
+      body: fullBody
+    });
+    const upText = await upRes.text();
+    if (!upRes.ok) throw new Error('YT upload: ' + upText);
+    const ytData = JSON.parse(upText);
+    log(`[TROLL] আপলোড সফল: https://youtu.be/${ytData.id}`);
+
+    tempFiles.forEach(f => { try { if(fs.existsSync(f)) fs.unlinkSync(f); } catch {} });
+    jobs[jobId] = { status: 'done', log: jobs[jobId].log, result: { videoId: ytData.id, url: `https://youtu.be/${ytData.id}`, title } };
+
+  } catch(e) {
+    tempFiles.forEach(f => { try { if(fs.existsSync(f)) fs.unlinkSync(f); } catch {} });
+    log('[TROLL] Error: ' + e.message);
+    jobs[jobId] = { status: 'error', error: e.message, log: jobs[jobId].log };
+  }
+}
+
+// Manual run troll edit
+app.post('/api/troll/run', async (req, res) => {
+  const { videoFileId } = req.body;
+  if (!videoFileId) return res.status(400).json({ error: 'videoFileId required' });
+  const jobId = createJob();
+  res.json({ jobId });
+  processTrollEdit(videoFileId, jobId).catch(e => console.error('[TROLL] Fatal:', e.message));
+});
+
+// Troll scheduler
+let trollScheduler = null;
+function startTrollScheduler() {
+  if (trollScheduler) clearInterval(trollScheduler);
+  trollScheduler = setInterval(async () => {
+    try {
+      const cfg = loadTrollConfig();
+      if (!cfg.enabled) return;
+      const now = new Date();
+      const bdOffset = 6 * 60;
+      const utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+      const bdMin = (utcMin + bdOffset) % (24 * 60);
+      const bdH = Math.floor(bdMin / 60);
+      const bdM = bdMin % 60;
+      const currentTime = `${String(bdH).padStart(2,'0')}:${String(bdM).padStart(2,'0')}`;
+      const day = now.toLocaleDateString('en-US',{weekday:'long',timeZone:'Asia/Dhaka'});
+      if (!(cfg.scheduleDays || []).includes(day)) return;
+      // 2 minute window to avoid missing on 60s interval
+      const [sh, sm] = (cfg.scheduleTime || '00:00').split(':').map(Number);
+      const slotMin = sh * 60 + sm;
+      if (Math.abs(bdMin - slotMin) > 1) return;
+
+      // Get next video from Drive
+      const fetch = (await import('node-fetch')).default;
+      const driveToken = await getValidDriveToken();
+      if (!driveToken) { console.log('[TROLL SCHED] Drive সংযুক্ত নয়'); return; }
+      const url = `https://www.googleapis.com/drive/v3/files?q='${cfg.driveFolderId}'+in+parents+and+mimeType+contains+'video/'&fields=files(id,name)&pageSize=100`;
+      const r = await fetch(url, { headers: { 'Authorization': `Bearer ${driveToken}` } });
+      const d = await r.json();
+      const videos = d.files || [];
+      if (videos.length === 0) { console.log('[TROLL SCHED] কোনো video নেই'); return; }
+
+      // Pick next video FIFO
+      const q = loadTrollQueue();
+      let remVids = (q.remainingVideos || []).filter(id => videos.find(v => v.id === id));
+      if (remVids.length === 0) remVids = videos.map(v => v.id).sort(() => Math.random() - 0.5);
+      const nextId = remVids.shift();
+      saveTrollQueue({ ...loadTrollQueue(), remainingVideos: remVids });
+
+      const jobId = createJob();
+      console.log('[TROLL SCHED] শুরু হচ্ছে:', nextId);
+      processTrollEdit(nextId, jobId).catch(e => console.error('[TROLL SCHED] Error:', e.message));
+    } catch(e) { console.error('[TROLL SCHED] Fatal:', e.message); }
+  }, 60000);
+}
+startTrollScheduler();
+
